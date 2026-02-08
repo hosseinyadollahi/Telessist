@@ -13,52 +13,43 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json());
 
-// Logger Middleware
 app.use((req, res, next) => {
     console.log(`[CHAT-API] ${req.method} ${req.url}`);
     next();
 });
 
-// Socket.io Setup
 const io = new Server(httpServer, {
   cors: {
-    origin: "*", // Adjust in production
+    origin: "*", 
     methods: ["GET", "POST"]
   }
 });
 
 io.on('connection', (socket) => {
-  console.log(`[SOCKET] New Connection: ${socket.id}`);
+  console.log(`\x1b[32m[SOCKET]\x1b[0m New Connection: ${socket.id}`);
 
   socket.on('join_chat', (chatId) => {
     socket.join(chatId);
-    console.log(`[SOCKET] ${socket.id} joined room: ${chatId}`);
-    // Optional: Log how many users are in the room
-    const roomSize = io.sockets.adapter.rooms.get(chatId)?.size || 0;
-    console.log(`[SOCKET] Room ${chatId} now has ${roomSize} participants`);
+    console.log(`\x1b[36m[SOCKET]\x1b[0m ${socket.id} joined room: ${chatId}`);
   });
 
   socket.on('send_message', (data) => {
-    console.log(`[SOCKET] Message Received from ${socket.id}:`, data);
+    console.log(`\x1b[33m[SOCKET]\x1b[0m Message from ${socket.id}:`, JSON.stringify(data));
     
-    // Save to DB here using 'query'
-    // Example: await query('INSERT INTO messages ...');
-    
-    // Broadcast to specific room
     if (data.chatId) {
         io.to(data.chatId).emit('receive_message', data);
-        console.log(`[SOCKET] Message broadcasted to room: ${data.chatId}`);
+        console.log(`\x1b[32m[SOCKET]\x1b[0m Broadcasted to room: ${data.chatId}`);
     } else {
-        console.warn(`[SOCKET] Message ignored: No chatId provided in payload`);
+        console.warn(`\x1b[31m[SOCKET]\x1b[0m Message ignored: No chatId`);
     }
   });
 
   socket.on('disconnect', (reason) => {
-    console.log(`[SOCKET] Disconnected: ${socket.id} | Reason: ${reason}`);
+    console.log(`\x1b[31m[SOCKET]\x1b[0m Disconnected: ${socket.id} | Reason: ${reason}`);
   });
   
   socket.on('error', (err) => {
-      console.error(`[SOCKET] Error on ${socket.id}:`, err);
+      console.error(`\x1b[41m[SOCKET ERROR]\x1b[0m on ${socket.id}:`, err);
   });
 });
 
@@ -67,7 +58,5 @@ app.get('/api/chat/status', (req, res) => {
 });
 
 httpServer.listen(PORT, () => {
-  console.log(`==========================================`);
-  console.log(`[CHAT-SERVICE] Running on port ${PORT}`);
-  console.log(`==========================================`);
+  console.log(`\x1b[35m[CHAT-SERVICE]\x1b[0m Running on port ${PORT}`);
 });

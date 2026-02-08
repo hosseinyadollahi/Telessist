@@ -15,20 +15,33 @@ export const initClient = async (apiId: number, apiHash: string) => {
   const stringSession = new StringSession(sessionStr);
   
   console.log("Initializing Telegram Client...");
+  console.log(`API ID: ${apiId}, Hash Length: ${apiHash.length}`);
   
-  // Basic configuration for browser environment
-  // We use useWSS: true to enforce WebSocket connections.
-  // If connection fails, it might be due to network blocking (need VPN)
+  // CONFIGURATION CHANGE:
+  // useWSS: false -> This forces GramJS to use HTTP requests instead of WebSockets.
+  // The error "wss://telessist.omniday.io/apiws failed" happens because the default
+  // GramJS WebSocket proxy is down or blocked. HTTP mode bypasses this specific proxy.
   client = new TelegramClient(stringSession, apiId, apiHash, {
     connectionRetries: 5,
-    useWSS: true, 
+    useWSS: false, 
+    testServers: false,
     deviceModel: "Telegram Web Clone",
     systemVersion: "1.0.0",
     appVersion: "1.0.0",
   });
 
-  // Connect without login first to restore session if exists
-  await client.connect();
+  // Log internal connection states
+  // client.setLogLevel("debug");
+
+  try {
+      console.log("Attempting to connect to Telegram DC...");
+      // Connect without login first to restore session if exists
+      await client.connect();
+      console.log("Client connected successfully!");
+  } catch (err) {
+      console.error("Client connection failed:", err);
+      throw err;
+  }
   
   // Save session on changes
   const currentSession = (client.session as any).save();
