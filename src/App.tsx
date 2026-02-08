@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Menu, Search, Phone, MoreVertical, Paperclip, Mic, Send, Smile, ArrowLeft, Users } from 'lucide-react';
 import Login from './components/Login';
-import { getClient, clearSession } from './lib/telegramClient';
+import { getClient, clearSession, initClient } from './lib/telegramClient';
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -10,24 +10,29 @@ export default function App() {
   const [activeChatId, setActiveChatId] = useState<any>(null);
   const [inputValue, setInputValue] = useState('');
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [isConnecting, setIsConnecting] = useState(true);
 
+  // Try to reconnect if session exists
   useEffect(() => {
     const checkAuth = async () => {
         const session = localStorage.getItem("telegram_session");
-        // In a real app, we might validate session here
+        // We need API ID/Hash to init properly. 
+        // For UX in this demo, if session exists, we assume user will re-login or 
+        // we prompt them. Since we don't store API ID/Hash in localstorage for security usually,
+        // we might show Login screen but auto-fill if we did.
+        // For this Clone, we'll show Login if no client is ready.
+        
+        // HOWEVER, if we have a session, we can't init without API ID.
+        // So user MUST go through Login screen 'Continue' at least.
+        setIsConnecting(false);
     };
     checkAuth();
   }, []);
 
   const fetchDialogs = async () => {
       const client = getClient();
-      if(!client) return;
-      
       try {
-        const me = await client.getMe();
-        setCurrentUser(me);
-
-        const dlgs = await client.getDialogs({ limit: 20 });
+        const dlgs: any = await client.getDialogs({});
         setDialogs(dlgs);
       } catch (e) {
           console.error("Error fetching dialogs:", e);
@@ -36,31 +41,38 @@ export default function App() {
 
   const fetchMessages = async (chatId: any) => {
       const client = getClient();
-      if(!client) return;
-      
       try {
-        const msgs = await client.getMessages(chatId, { limit: 50 });
+        const msgs: any = await client.getMessages(chatId, {});
+        // Backend returns them in order, or reverse? Usually new to old.
+        // We want Old to New (top to bottom) usually for rendering
         setMessages(msgs.reverse());
       } catch (e) {
         console.error("Error fetching messages:", e);
       }
   };
 
-  const handleLoginSuccess = () => {
+  const handleLoginSuccess = async () => {
     setIsAuthenticated(true);
+    // client is already init inside Login component
+    // we just need to get the user info if possible
+    const client = getClient();
+    if(client.me) setCurrentUser(client.me);
+    
     fetchDialogs();
   };
 
   const handleLogout = async () => {
       const client = getClient();
-      if(client) await client.disconnect();
+      await client.disconnect();
       clearSession();
       setIsAuthenticated(false);
   };
 
-  const handleChatSelect = (chat: any) => {
-      setActiveChatId(chat.entity);
-      fetchMessages(chat.entity);
+  const handleChatSelect = (dialog: any) => {
+      // dialog.id might be the ID, dialog.entityId is what we need for requests usually
+      const targetId = dialog.entityId || dialog.id;
+      setActiveChatId(targetId);
+      fetchMessages(targetId);
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -68,16 +80,27 @@ export default function App() {
     if (!inputValue.trim() || !activeChatId) return;
 
     const client = getClient();
-    if(!client) return;
-
     try {
+        // Optimistic update
+        const tempId = Date.now();
+        setMessages(prev => [...prev, {
+            id: tempId,
+            message: inputValue,
+            date: Date.now() / 1000,
+            out: true
+        }]);
+
         await client.sendMessage(activeChatId, { message: inputValue });
         setInputValue('');
-        fetchMessages(activeChatId); 
+        
+        // Refresh to get real ID and status
+        setTimeout(() => fetchMessages(activeChatId), 500); 
     } catch (e) {
         console.error("Send error", e);
     }
   };
+
+  if (isConnecting) return <div className="flex h-screen items-center justify-center bg-[#0f172a] text-white">Loading...</div>;
 
   if (!isAuthenticated) {
     return <Login onLoginSuccess={handleLoginSuccess} />;
@@ -93,7 +116,7 @@ export default function App() {
           <button 
             onClick={handleLogout}
             className="p-2 hover:bg-slate-700 rounded-full text-slate-400"
-            title="Menu (Click to Logout)"
+            title="Logout"
           >
             <Menu size={24} />
           </button>
@@ -113,7 +136,7 @@ export default function App() {
             <div 
               key={dialog.id} 
               onClick={() => handleChatSelect(dialog)}
-              className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-[#2c374b] transition-colors ${activeChatId === dialog.entity ? 'bg-[#334155]' : ''}`}
+              className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-[#2c374b] transition-colors ${activeChatId === (dialog.entityId || dialog.id) ? 'bg-[#334155]' : ''}`}
             >
               <div className="relative shrink-0">
                 <div className="w-12 h-12 rounded-full bg-slate-700 flex items-center justify-center text-lg font-bold">
@@ -152,7 +175,9 @@ export default function App() {
                   <ArrowLeft size={24} className="text-slate-400" />
                 </button>
                 <div className="flex flex-col">
-                  <span className="font-semibold text-sm">Chat</span>
+                  <span className="font-semibold text-sm">
+                      {dialogs.find(d => (d.entityId || d.id) === activeChatId)?.title || 'Chat'}
+                  </span>
                   <span className="text-xs text-slate-400">Telegram Network</span>
                 </div>
               </div>
@@ -217,7 +242,9 @@ export default function App() {
                <Users size={48} />
                <div className="absolute -top-2 -right-2 bg-green-500 w-4 h-4 rounded-full border-2 border-[#1e293b]"></div>
             </div>
-            <h2 className="text-lg font-semibold text-white mb-2">Welcome {currentUser?.firstName}</h2>
+            <h2 className="text-lg font-semibold text-white mb-2">
+                {currentUser ? `Welcome, ${currentUser.firstName}` : 'Welcome to Telegram'}
+            </h2>
             <p className="text-sm bg-[#1e293b] px-4 py-1 rounded-full">Select a chat to start messaging</p>
           </div>
         )}

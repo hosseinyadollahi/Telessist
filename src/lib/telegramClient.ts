@@ -1,76 +1,115 @@
-import { TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions";
-import { Logger } from "telegram/extensions";
+import { socket, connectSocket } from './socket';
 
-// We use a singleton pattern to ensure one connection across the app
-let client: TelegramClient | null = null;
+// This file now acts as a wrapper around the Socket.IO connection
+// to mimic the behavior of a Telegram Client, but async.
+
 let sessionStr = localStorage.getItem("telegram_session") || "";
 
-// Set log level to debug to see more info in console
-Logger.setLevel("debug");
+// Helper to wait for a specific event
+const waitForEvent = (eventName: string, errorEventName = 'telegram_error', timeout = 30000): Promise<any> => {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            cleanup();
+            reject(new Error(`Timeout waiting for ${eventName}`));
+        }, timeout);
 
-export const initClient = async (apiId: number, apiHash: string) => {
-  if (client) return client;
+        const onSuccess = (data: any) => {
+            cleanup();
+            resolve(data);
+        };
 
-  const stringSession = new StringSession(sessionStr);
-  
-  console.log("%c[TelegramClient] Initializing...", "color: cyan; font-weight: bold");
-  console.log(`[TelegramClient] API ID: ${apiId}`);
-  
-  // FIX: Must be useWSS: true for HTTPS environments (like StackBlitz, Vercel, or Production)
-  // useWSS: false causes "SecurityError: Failed to construct 'WebSocket': An insecure WebSocket connection may not be initiated from a page loaded over HTTPS"
-  client = new TelegramClient(stringSession, apiId, apiHash, {
-    connectionRetries: 5,
-    useWSS: true, 
-    testServers: false,
-    deviceModel: "Telegram Web Clone",
-    systemVersion: "1.0.0",
-    appVersion: "1.0.0",
-  });
+        const onError = (data: any) => {
+             // Optional: check if error matches request
+             cleanup();
+             reject(new Error(data.error || "Unknown Error"));
+        };
 
-  // Inject a custom logger wrapper to catch internal GramJS logs if possible
-  // (GramJS uses a global logger, configured above via Logger.setLevel)
+        const cleanup = () => {
+            socket.off(eventName, onSuccess);
+            socket.off(errorEventName, onError);
+            clearTimeout(timer);
+        };
 
-  try {
-      console.log("%c[TelegramClient] Connecting to DC...", "color: yellow");
-      const startTime = Date.now();
-      
-      // Connect without login first to restore session if exists
-      await client.connect();
-      
-      const duration = Date.now() - startTime;
-      console.log(`%c[TelegramClient] Connected successfully in ${duration}ms!`, "color: green; font-weight: bold");
-  } catch (err: any) {
-      console.error("%c[TelegramClient] Connection Failed!", "color: red; font-weight: bold", err);
-      
-      // Detailed error analysis for the user
-      if (err.message && err.message.includes("wss://")) {
-          console.warn("Hint: The default GramJS proxy (wss://telessist.omniday.io) might be blocked in your region. Try using a VPN.");
-      }
-      throw err;
-  }
-  
-  // Save session on changes
-  const currentSession = (client.session as any).save();
-  if (currentSession !== sessionStr) {
-     localStorage.setItem("telegram_session", currentSession);
-     sessionStr = currentSession;
-  }
-
-  return client;
+        socket.on(eventName, onSuccess);
+        socket.on(errorEventName, onError);
+    });
 };
 
-export const getClient = () => client;
+export const initClient = async (apiId: number, apiHash: string) => {
+    connectSocket();
+    
+    // Send init request
+    socket.emit('telegram_init', { apiId, apiHash, session: sessionStr });
+    
+    // Wait for success
+    const res: any = await waitForEvent('telegram_init_success');
+    
+    // Update session if changed
+    if (res.session && res.session !== sessionStr) {
+        sessionStr = res.session;
+        localStorage.setItem("telegram_session", sessionStr);
+    }
+    
+    return createProxyClient(res.user); // Return a proxy object
+};
+
+export const getClient = () => {
+    // Return a dummy object if socket is active, logic handled in components mostly
+    // or return the singleton proxy
+    return createProxyClient(null);
+};
+
+// A proxy object that looks like the GramJS client but sends socket events
+const createProxyClient = (userCtx: any) => {
+    return {
+        me: userCtx,
+        
+        getMe: async () => {
+             // In a real implementation we might fetch again
+             return userCtx;
+        },
+
+        sendCode: async (params: any, phone: string) => {
+            socket.emit('telegram_send_code', { phone });
+            return await waitForEvent('telegram_send_code_success');
+        },
+
+        signIn: async (params: any) => {
+             socket.emit('telegram_login', params);
+             const res: any = await waitForEvent('telegram_login_success', 'telegram_error', 60000); // 60s timeout for waiting
+             // Save session
+             if (res.session) {
+                 localStorage.setItem("telegram_session", res.session);
+             }
+             return res;
+        },
+
+        getDialogs: async (params: any) => {
+            socket.emit('telegram_get_dialogs');
+            return await waitForEvent('telegram_dialogs_data');
+        },
+
+        getMessages: async (chatId: any, params: any) => {
+            socket.emit('telegram_get_messages', { chatId });
+            return await waitForEvent('telegram_messages_data');
+        },
+
+        sendMessage: async (chatId: any, params: any) => {
+             socket.emit('telegram_send_message', { chatId, message: params.message });
+             return await waitForEvent('telegram_message_sent'); // or just resolve if we don't care
+        },
+
+        disconnect: async () => {
+            socket.disconnect();
+        }
+    };
+};
 
 export const saveSession = () => {
-    if (client) {
-        const currentSession = (client.session as any).save();
-        localStorage.setItem("telegram_session", currentSession);
-    }
-}
+    // Session is saved automatically in localstorage in this new architecture on event receipt
+};
 
 export const clearSession = () => {
     localStorage.removeItem("telegram_session");
-    client = null;
     window.location.reload();
-}
+};
