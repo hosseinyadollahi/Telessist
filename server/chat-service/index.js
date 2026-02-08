@@ -31,12 +31,13 @@ const log = (tag, message, data = null) => {
             if (key === 'session') return '***HIDDEN***';
             if (key === 'phoneCodeHash') return value;
             if (key === 'bytes') return '[Buffer]';
+            if (key === 'token') return '***QR_TOKEN***';
             return value;
         }, 2));
     }
 };
 
-// Map<deviceSessionId, { client: TelegramClient, cleanup: NodeJS.Timeout }>
+// Map<deviceSessionId, { client: TelegramClient, cleanup: NodeJS.Timeout, passwordResolver: Function }>
 const activeSessions = new Map();
 // Map<socketId, deviceSessionId>
 const socketMap = new Map();
@@ -54,15 +55,12 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
         stringSession.setDC(2, "149.154.167.50", 443);
     }
     
-    // CRITICAL CHANGE: Mimic the OFFICIAL Telegram Desktop client exactly.
-    // This forces Telegram to treat this connection as a legitimate desktop app,
-    // prioritizing sending the code to other active mobile apps.
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
         connectionRetries: 5,
         useWSS: false, 
-        deviceModel: "Telegram Desktop", // Changed to official name
+        deviceModel: "Telegram Desktop", 
         systemVersion: "Windows 10",
-        appVersion: "4.14.13",           // Recent stable version
+        appVersion: "4.14.13",           
         langCode: "en",
         systemLangCode: "en",
         timeout: 30, 
@@ -84,6 +82,12 @@ io.on('connection', (socket) => {
       const sessionId = socketMap.get(socket.id);
       if (!sessionId) return null;
       return activeSessions.get(sessionId)?.client;
+  };
+
+  const getSessionData = () => {
+      const sessionId = socketMap.get(socket.id);
+      if (!sessionId) return null;
+      return activeSessions.get(sessionId);
   };
 
   socket.on('telegram_init', async (data) => {
@@ -112,7 +116,7 @@ io.on('connection', (socket) => {
                    // wait for user to login
               } else {
                    client = await createTelegramClient(session, apiId, apiHash);
-                   activeSessions.set(deviceSessionId, { client, cleanup: null });
+                   activeSessions.set(deviceSessionId, { client, cleanup: null, passwordResolver: null });
               }
           }
 
@@ -143,6 +147,91 @@ io.on('connection', (socket) => {
       }
   });
 
+  // --- QR CODE LOGIN ---
+  socket.on('telegram_login_qr', async () => {
+      const client = getClient();
+      const sessionData = getSessionData();
+
+      if(!client) return socket.emit('telegram_error', { error: "Session not initialized" });
+      
+      log("QR", "Starting QR Login flow...");
+
+      try {
+          // This function keeps running until success or error
+          const user = await client.signInUserWithQrCode({
+              apiId: Number(client.apiId),
+              apiHash: String(client.apiHash),
+              qrCode: async ({ token, expires }) => {
+                  log("QR", "New QR Token generated");
+                  // Convert token buffer to base64url format for tg:// link
+                  const tokenBase64 = token.toString('base64')
+                      .replace(/\+/g, '-')
+                      .replace(/\//g, '_')
+                      .replace(/=+$/, '');
+                  
+                  socket.emit('telegram_qr_generated', { 
+                      token: tokenBase64, 
+                      expires: expires 
+                  });
+              },
+              onError: (err) => {
+                  log("QR_ERROR", err.message);
+                  socket.emit('telegram_error', { method: 'qrLogin', error: err.message });
+              },
+              password: async (hint) => {
+                  log("QR", "2FA Password needed for QR Login");
+                  socket.emit('telegram_password_needed', { hint });
+                  
+                  // Return a promise that waits for the user to send the password via socket
+                  return new Promise((resolve, reject) => {
+                      // Store the resolve function to call it later when 'telegram_send_password' is received
+                      if (sessionData) {
+                          sessionData.passwordResolver = resolve;
+                          // Timeout security
+                          setTimeout(() => {
+                              if(sessionData.passwordResolver === resolve) {
+                                  reject(new Error("Password timeout"));
+                              }
+                          }, 120000);
+                      } else {
+                          reject(new Error("Session lost during 2FA"));
+                      }
+                  });
+              }
+          });
+
+          log("QR", "QR Login Successful!");
+          socket.emit('telegram_login_success', { session: client.session.save() });
+
+      } catch (err) {
+          log("QR_FATAL", err.message);
+          socket.emit('telegram_error', { method: 'qrLogin', error: err.message });
+      }
+  });
+
+  socket.on('telegram_send_password', ({ password }) => {
+      const sessionData = getSessionData();
+      if (sessionData && sessionData.passwordResolver) {
+          log("QR", "Received 2FA password from user");
+          sessionData.passwordResolver(password);
+          sessionData.passwordResolver = null; // Clear it
+      } else {
+          log("QR", "Received password but no resolver waiting");
+          // Fallback for standard login
+          const client = getClient();
+          if(client) {
+              client.signIn({ password: String(password) })
+                .then(() => {
+                    socket.emit('telegram_login_success', { session: client.session.save() });
+                })
+                .catch(err => {
+                    socket.emit('telegram_error', { method: 'login', error: err.message });
+                });
+          }
+      }
+  });
+  // ---------------------
+
   socket.on('telegram_send_code', async ({ phone }) => {
       const client = getClient();
       if(!client) {
@@ -160,9 +249,8 @@ io.on('connection', (socket) => {
           
           log("AUTH_RESULT", "Telegram Response:", result);
 
-          // Determine delivery type
           const type = result.type?.className || 'unknown';
-          const isApp = type.includes('App'); // usually auth.SentCodeTypeApp
+          const isApp = type.includes('App'); 
           
           socket.emit('telegram_send_code_success', { 
               phoneCodeHash: result.phoneCodeHash,
@@ -173,22 +261,12 @@ io.on('connection', (socket) => {
 
       } catch (err) {
           log("AUTH_ERROR", err.message);
-          
           if (err.message && err.message.includes('FLOOD_WAIT')) {
               const seconds = err.seconds || parseInt(err.message.match(/\d+/)[0]) || 60;
-              socket.emit('telegram_error', { 
-                  method: 'sendCode', 
-                  error: `Too many attempts. Please wait ${seconds} seconds.` 
-              });
+              socket.emit('telegram_error', { method: 'sendCode', error: `Too many attempts. Wait ${seconds}s.` });
               return;
           }
-
-          if (err.errorMessage && err.errorMessage.startsWith('PHONE_MIGRATE_')) {
-               socket.emit('telegram_error', { method: 'sendCode', error: "DC Migration required. Please retry." });
-               return;
-          }
-          
-          socket.emit('telegram_error', { method: 'sendCode', error: err.message || "Failed to send code" });
+          socket.emit('telegram_error', { method: 'sendCode', error: err.message });
       }
   });
 
@@ -219,7 +297,6 @@ io.on('connection', (socket) => {
       } catch (err) {
           const msg = err.message || err.errorMessage || "Unknown Error";
           log("LOGIN_ERROR", msg);
-          
           if (msg.includes("SESSION_PASSWORD_NEEDED")) {
                socket.emit('telegram_error', { method: 'login', error: "SESSION_PASSWORD_NEEDED" }); 
           } else if (msg.includes("PHONE_CODE_EXPIRED")) {
@@ -244,7 +321,6 @@ io.on('connection', (socket) => {
       socketMap.delete(socket.id);
   });
   
-  // Forwarders for dialogs/messages...
   socket.on('telegram_get_dialogs', async () => {
       const client = getClient();
       if(!client) return;

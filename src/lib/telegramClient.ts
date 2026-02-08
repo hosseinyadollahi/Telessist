@@ -8,8 +8,6 @@ const generateUUID = () => {
     });
 };
 
-// Get or create a persistent ID for this browser
-// Robust version: handles localStorage failures (e.g. Incognito mode)
 const getDeviceSessionId = () => {
     let id;
     try {
@@ -20,7 +18,6 @@ const getDeviceSessionId = () => {
         }
     } catch (e) {
         console.warn("[TelegramClient] LocalStorage access failed or restricted. Using memory fallback.");
-        // Fallback to global variable for this session
         if (!(window as any)._tempSessionId) {
             (window as any)._tempSessionId = generateUUID();
         }
@@ -29,15 +26,11 @@ const getDeviceSessionId = () => {
     return id;
 };
 
-// Safely get initial session
 let sessionStr = "";
 try {
     sessionStr = localStorage.getItem("telegram_session") || "";
-} catch (e) {
-    console.warn("Could not read telegram_session from storage");
-}
+} catch (e) {}
 
-// Helper to wait for a specific event
 const waitForEvent = (eventName: string, errorEventName = 'telegram_error', timeout = 30000): Promise<any> => {
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -76,13 +69,10 @@ export const initClient = async (apiId: number, apiHash: string) => {
         throw new Error("Failed to generate Device Session ID");
     }
 
-    // Send init request with stable device ID
     socket.emit('telegram_init', { apiId, apiHash, session: sessionStr, deviceSessionId });
     
-    // Wait for success
     const res: any = await waitForEvent('telegram_init_success', 'telegram_error', 60000);
     
-    // Update session if changed
     if (res.session && res.session !== sessionStr) {
         sessionStr = res.session;
         try {
@@ -107,8 +97,48 @@ const createProxyClient = (userCtx: any) => {
             return await waitForEvent('telegram_send_code_success', 'telegram_error', 120000);
         },
 
+        // New: Start QR Login Flow
+        startQrLogin: (onQrRecieved: (token: string) => void) => {
+            socket.emit('telegram_login_qr');
+            
+            socket.off('telegram_qr_generated'); // remove old listeners
+            socket.on('telegram_qr_generated', (data: any) => {
+                onQrRecieved(data.token);
+            });
+            
+            // Return a promise that resolves when login is successful (or needs pass)
+            return new Promise((resolve, reject) => {
+                socket.once('telegram_login_success', (res: any) => {
+                    if (res.session) {
+                        try { localStorage.setItem("telegram_session", res.session); } catch(e){}
+                    }
+                    socket.off('telegram_qr_generated');
+                    socket.off('telegram_password_needed');
+                    resolve(res);
+                });
+                
+                socket.once('telegram_error', (err: any) => {
+                    if(err.method === 'qrLogin') {
+                        socket.off('telegram_qr_generated');
+                        socket.off('telegram_password_needed');
+                        reject(new Error(err.error));
+                    }
+                });
+
+                socket.once('telegram_password_needed', (hint: any) => {
+                     // We resolve with a special flag indicating password is needed
+                     resolve({ passwordNeeded: true, hint });
+                });
+            });
+        },
+
         signIn: async (params: any) => {
-             socket.emit('telegram_login', params);
+             if (params.password) {
+                 socket.emit('telegram_send_password', { password: params.password });
+             } else {
+                 socket.emit('telegram_login', params);
+             }
+             
              const res: any = await waitForEvent('telegram_login_success', 'telegram_error', 60000);
              if (res.session) {
                  try { localStorage.setItem("telegram_session", res.session); } catch(e){}
