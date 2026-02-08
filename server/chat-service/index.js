@@ -32,14 +32,18 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
     if (!sessionStr) {
         stringSession.setDC(2, "149.154.167.50", 443);
     }
+    
+    // CHANGED: Use standard browser signatures to avoid being flagged/blocked by Telegram
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
         connectionRetries: 5,
         useWSS: false, 
-        deviceModel: "Telegram Web Clone",
-        systemVersion: "Linux",
-        appVersion: "1.0.0",
+        deviceModel: "Chrome",       // Changed from "Telegram Web Clone"
+        systemVersion: "Windows 10", // Changed from "Linux"
+        appVersion: "121.0",         // Changed from "1.0.0"
+        langCode: "en",
         timeout: 30, 
     });
+    
     client.setLogLevel("error");
     await client.connect();
     return client;
@@ -115,17 +119,35 @@ io.on('connection', (socket) => {
       console.log(`[${socket.id}] Sending code to ${phoneClean}...`);
 
       try {
-          const { phoneCodeHash } = await client.sendCode({
+          // Store result to inspect delivery type
+          const result = await client.sendCode({
               apiId: Number(client.apiId),
               apiHash: String(client.apiHash),
           }, phoneClean);
           
-          console.log(`[${socket.id}] Code sent.`);
-          socket.emit('telegram_send_code_success', { phoneCodeHash });
+          // Log where the code was sent (APP or SMS)
+          // result usually contains type: { className: 'auth.SentCodeTypeApp' } or similar
+          console.log(`[${socket.id}] Code sent successfully.`);
+          if (result && result.type) {
+              console.log(`[${socket.id}] 📨 Delivery Type: ${result.type.className || result.type}`);
+          }
+          
+          socket.emit('telegram_send_code_success', { phoneCodeHash: result.phoneCodeHash });
 
       } catch (err) {
           console.error(`[${socket.id}] Send Code Error: ${err.message}`);
           
+          // Handle Flood Wait specifically
+          if (err.message && err.message.includes('FLOOD_WAIT')) {
+              const seconds = err.seconds || parseInt(err.message.match(/\d+/)[0]) || 60;
+              console.log(`[${socket.id}] ⏳ FLOOD WAIT: ${seconds} seconds`);
+              socket.emit('telegram_error', { 
+                  method: 'sendCode', 
+                  error: `Too many attempts. Please wait ${seconds} seconds.` 
+              });
+              return;
+          }
+
           if (err.errorMessage && err.errorMessage.startsWith('PHONE_MIGRATE_')) {
               const targetDC = Number(err.errorMessage.split('_')[2]);
               console.log(`[${socket.id}] ⚠️ Migration required to DC ${targetDC}`);
@@ -149,7 +171,9 @@ io.on('connection', (socket) => {
                   const newClient = new TelegramClient(newSession, apiId, apiHash, {
                       connectionRetries: 5,
                       useWSS: false,
-                      deviceModel: "Telegram Web Clone",
+                      deviceModel: "Chrome", // Consistent device model
+                      systemVersion: "Windows 10",
+                      appVersion: "121.0",
                   });
                   newClient.setLogLevel("error");
                   await newClient.connect();
