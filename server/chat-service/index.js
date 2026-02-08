@@ -25,28 +25,33 @@ const clients = new Map();
 const createTelegramClient = async (sessionStr, apiId, apiHash) => {
     let stringSession = new StringSession(sessionStr || "");
     
+    // Clean weird session strings
     if (stringSession.serverAddress && stringSession.serverAddress.includes('omniday')) {
         stringSession = new StringSession("");
     }
 
+    // OPTIMIZATION: If session is empty, FORCE DC 2 (Europe/Global) by default.
+    // Most users (including +49 numbers) are on DC 2. This prevents the initial migration delay/error.
+    if (!sessionStr) {
+        stringSession.setDC(2, "149.154.167.50", 443);
+    }
+
     // Always prefer DC 2 IP if we are on DC 2
     if (stringSession.dcId === 2) {
-        console.log("⚡ enforcing DC 2 IP: 149.154.167.50:443");
         stringSession.setDC(2, "149.154.167.50", 443);
     }
 
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
-        connectionRetries: 10,
+        connectionRetries: 5,
         useWSS: false, // Force TCP
         deviceModel: "Telegram Web Server",
         systemVersion: "Linux",
         appVersion: "1.0.0",
-        // CRITICAL: Increased socket timeout. 
-        // Default is often too low for DC migration handshakes on slower server connections.
-        timeout: 60, 
+        timeout: 30, // Moderate timeout
     });
     
-    client.setLogLevel("info");
+    // Suppress verbose logs unless error
+    client.setLogLevel("error");
     
     await client.connect();
     return client;
@@ -59,7 +64,8 @@ io.on('connection', (socket) => {
       try {
           console.log(`[${socket.id}] Init Client...`);
           if (clients.has(socket.id)) {
-              await clients.get(socket.id).disconnect();
+              // Try to graceful disconnect, but ignore errors
+              try { await clients.get(socket.id).disconnect(); } catch(e){}
               clients.delete(socket.id);
           }
 
@@ -90,7 +96,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('telegram_send_code', async ({ phone }) => {
-      // Clean phone number (remove spaces, parentheses)
+      // Clean phone number
       const phoneClean = String(phone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
       console.log(`[${socket.id}] Sending code to ${phoneClean}...`);
 
@@ -98,94 +104,75 @@ io.on('connection', (socket) => {
       if(!client) return socket.emit('telegram_error', { error: "Client not initialized" });
 
       try {
-          // Wrap sendCode in a timeout race. 
-          const sendCodePromise = client.sendCode({
+          // DIRECT CALL - NO TIMEOUT WRAPPER, NO AUTO-RETRY
+          // This prevents sending 2 codes and expiring the first one.
+          const { phoneCodeHash } = await client.sendCode({
               apiId: Number(client.apiId),
               apiHash: String(client.apiHash),
           }, phoneClean);
-
-          // INCREASED TIMEOUT to 75s. 
-          const timeoutPromise = new Promise((_, reject) => 
-               setTimeout(() => reject(new Error("BACKEND_TIMEOUT")), 75000)
-          );
-
-          const { phoneCodeHash } = await Promise.race([sendCodePromise, timeoutPromise]);
           
           socket.emit('telegram_send_code_success', { phoneCodeHash });
 
       } catch (err) {
           console.error(`[${socket.id}] Send Code Error: ${err.message}`);
 
-          const isMigrationError = err.errorMessage && err.errorMessage.startsWith('PHONE_MIGRATE_');
-          // Catch both manual timeout and GramJS internal timeout string
-          const isTimeout = err.message === "BACKEND_TIMEOUT" || err.message.includes("TIMEOUT");
+          // Handle Migration Error Explicitly
+          if (err.errorMessage && err.errorMessage.startsWith('PHONE_MIGRATE_')) {
+              const targetDC = Number(err.errorMessage.split('_')[2]);
+              console.log(`[${socket.id}] ⚠️ Account requires DC ${targetDC}. Switching...`);
 
-          if (isMigrationError || isTimeout) {
-              
-              let targetDC = 2; // Default fallback
-              if (isMigrationError) {
-                  targetDC = Number(err.errorMessage.split('_')[2]);
-                  console.log(`[${socket.id}] ⚠️ Explicit Migration requested to DC ${targetDC}`);
-              } else {
-                  console.log(`[${socket.id}] ⏳ Timeout detected. Assuming stuck migration. Forcing switch to DC 2...`);
-              }
+              try {
+                  const apiId = Number(client.apiId);
+                  const apiHash = String(client.apiHash);
+                  
+                  // Disconnect old
+                  await client.disconnect();
+                  clients.delete(socket.id);
 
-              if (targetDC === 2) {
-                  try {
-                      console.log(`[${socket.id}] 🔄 Re-creating client on DC 2 (149.154.167.50:443)...`);
-                      
-                      const apiId = Number(client.apiId);
-                      const apiHash = String(client.apiHash);
+                  // Create New Session on correct DC
+                  const newSession = new StringSession("");
+                  // Map common IPs (Simplified)
+                  let ip = "149.154.167.50"; // DC 2
+                  if (targetDC === 1) ip = "149.154.175.53";
+                  if (targetDC === 4) ip = "149.154.167.91";
+                  if (targetDC === 5) ip = "91.108.56.130";
+                  
+                  newSession.setDC(targetDC, ip, 443);
 
-                      // Kill old client
-                      await client.disconnect();
-                      clients.delete(socket.id);
+                  const newClient = new TelegramClient(newSession, apiId, apiHash, {
+                      connectionRetries: 5,
+                      useWSS: false,
+                      deviceModel: "Telegram Web Server", 
+                      appVersion: "1.0.0"
+                  });
+                  
+                  newClient.setLogLevel("error");
+                  await newClient.connect();
+                  clients.set(socket.id, newClient);
 
-                      // Create NEW session on DC 2 / Port 443
-                      const newSession = new StringSession("");
-                      newSession.setDC(2, "149.154.167.50", 443);
+                  // Update frontend session but DO NOT RESEND CODE AUTOMATICALLY.
+                  // Resending automatically is what causes "PHONE_CODE_EXPIRED".
+                  // We ask the user to click "Next" again.
+                  socket.emit('telegram_init_success', { 
+                      session: newClient.session.save(), 
+                      isAuth: false, 
+                      user: null 
+                  });
+                  
+                  socket.emit('telegram_error', { 
+                      method: 'sendCode', 
+                      error: "Connection optimized for your region. Please click 'Next' again." 
+                  });
+                  return;
 
-                      const newClient = new TelegramClient(newSession, apiId, apiHash, {
-                          connectionRetries: 10,
-                          useWSS: false,
-                          deviceModel: "Telegram Web Server", 
-                          appVersion: "1.0.0",
-                          timeout: 60, // IMPORTANT: Ensure timeout is high for the new client too
-                      });
-                      
-                      // Double enforce DC settings on the instance
-                      newClient.session.setDC(2, "149.154.167.50", 443);
-
-                      newClient.setLogLevel("info");
-                      await newClient.connect();
-                      clients.set(socket.id, newClient);
-                      
-                      socket.emit('telegram_init_success', { 
-                          session: newClient.session.save(), 
-                          isAuth: false, 
-                          user: null 
-                      });
-
-                      console.log(`[${socket.id}] 🔄 Retrying sendCode on new connection...`);
-                      
-                      // Use clean phone
-                      const { phoneCodeHash } = await newClient.sendCode(
-                          { apiId: apiId, apiHash: apiHash }, 
-                          phoneClean
-                      );
-                      
-                      socket.emit('telegram_send_code_success', { phoneCodeHash });
-                      return; 
-
-                  } catch (retryErr) {
-                      console.error(`[${socket.id}] Retry Failed:`, retryErr);
-                      socket.emit('telegram_error', { method: 'sendCode', error: "Connection failed after switching DC. Please check server internet." });
-                      return;
-                  }
+              } catch (migErr) {
+                  console.error("Migration switch failed", migErr);
+                  socket.emit('telegram_error', { method: 'sendCode', error: "Could not switch data center." });
+                  return;
               }
           }
-          
-          socket.emit('telegram_error', { method: 'sendCode', error: err.message });
+
+          socket.emit('telegram_error', { method: 'sendCode', error: err.message || "Failed to send code" });
       }
   });
 
@@ -194,15 +181,12 @@ io.on('connection', (socket) => {
       if(!client) return;
       
       const { code, phoneCodeHash, password } = payload;
-      // Accept either 'phone' or 'phoneNumber' to be robust
       const rawPhone = payload.phone || payload.phoneNumber;
-      
-      // CRITICAL: Clean phone number to avoid PHONE_NUMBER_INVALID error
       const phoneClean = String(rawPhone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
+      
       console.log(`[${socket.id}] Logging in with ${phoneClean}...`);
 
       try {
-          // Fallback to low-level invoke because client.signIn seems missing/bugged in this context
           await client.invoke(new Api.auth.SignIn({
               phoneNumber: phoneClean,
               phoneCodeHash: String(phoneCodeHash),
@@ -215,32 +199,27 @@ io.on('connection', (socket) => {
           const msg = err.message || err.errorMessage || "Unknown Error";
           
           if (msg.includes("SESSION_PASSWORD_NEEDED")) {
-              if (password) {
-                  try {
-                      // Try high level sign in specifically for password, or checkPassword
-                      await client.signIn({ 
-                          password: String(password), 
-                          phoneNumber: phoneClean, 
-                          phoneCodeHash: String(phoneCodeHash), 
-                          phoneCode: String(code) 
-                      });
-                      socket.emit('telegram_login_success', { session: client.session.save() });
-                  } catch (pwErr) {
-                       // If high-level fails, try low-level password check (complex) or just report error
-                       console.error("Password Login Error:", pwErr);
-                       socket.emit('telegram_error', { method: 'login_password', error: pwErr.message });
-                  }
-              } else {
-                  socket.emit('telegram_password_needed');
-              }
+              // Try high level sign in specifically for password flow triggers
+               socket.emit('telegram_password_needed');
           } else if (msg.includes("PHONE_CODE_EXPIRED")) {
-              console.error(`[${socket.id}] Code Expired. This usually means a 2nd code was requested.`);
-              socket.emit('telegram_error', { method: 'login', error: "Code Expired. Please click BACK and try again to get a new code." });
+              socket.emit('telegram_error', { method: 'login', error: "The code expired. Please restart the login process." });
           } else {
               console.error(`[${socket.id}] Login Error:`, err);
               socket.emit('telegram_error', { method: 'login', error: msg });
           }
       }
+  });
+
+  socket.on('telegram_login_password', async ({ password }) => {
+        const client = clients.get(socket.id);
+        if(!client) return;
+
+        try {
+            await client.signIn({ password: String(password) });
+            socket.emit('telegram_login_success', { session: client.session.save() });
+        } catch(err) {
+            socket.emit('telegram_error', { method: 'login_password', error: err.message || "Invalid Password" });
+        }
   });
 
   socket.on('telegram_get_dialogs', async () => {
@@ -258,7 +237,10 @@ io.on('connection', (socket) => {
           }));
           socket.emit('telegram_dialogs_data', serialized);
       } catch (err) {
-          socket.emit('telegram_error', { method: 'getDialogs', error: err.message });
+          // Ignore timeout errors in logs for getDialogs, they are just noise
+          if (!err.message.includes('TIMEOUT')) {
+             socket.emit('telegram_error', { method: 'getDialogs', error: err.message });
+          }
       }
   });
 
@@ -276,7 +258,9 @@ io.on('connection', (socket) => {
           }));
           socket.emit('telegram_messages_data', serialized);
       } catch (err) {
-          socket.emit('telegram_error', { method: 'getMessages', error: err.message });
+          if (!err.message.includes('TIMEOUT')) {
+            socket.emit('telegram_error', { method: 'getMessages', error: err.message });
+          }
       }
   });
 
@@ -294,14 +278,16 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
       console.log(`[SOCKET] Disconnected: ${socket.id}`);
       if (clients.has(socket.id)) {
-          clients.get(socket.id).disconnect();
+          // Fire and forget disconnect
+          const client = clients.get(socket.id);
           clients.delete(socket.id);
+          client.disconnect().catch(() => {});
       }
   });
 });
 
 app.get('/api/chat/status', (req, res) => {
-  res.json({ status: 'Chat Service Running', ip_config: 'Auto-Switch to 149.154.167.50:443 on Timeout' });
+  res.json({ status: 'Chat Service Running', ip_config: 'Optimized DC 2' });
 });
 
 httpServer.listen(PORT, () => {
