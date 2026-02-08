@@ -65,8 +65,6 @@ io.on('connection', (socket) => {
               const existingClient = clients.get(socket.id);
               
               // If connected and API ID matches, reuse this client!
-              // We ignore session string mismatch here because the server might have 
-              // a fuller session string than the client during the initial handshake.
               if (existingClient.connected && Number(existingClient.apiId) === Number(apiId)) {
                   console.log(`[${socket.id}] ♻️ Client already active. Reusing existing connection.`);
                   
@@ -82,7 +80,7 @@ io.on('connection', (socket) => {
                       };
                   }
                   
-                  // Return the CURRENT server session, not the one passed in
+                  // Return the CURRENT server session
                   socket.emit('telegram_init_success', { 
                       session: existingClient.session.save(),
                       isAuth,
@@ -138,6 +136,7 @@ io.on('connection', (socket) => {
               apiHash: String(client.apiHash),
           }, phoneClean);
           
+          console.log(`[${socket.id}] Code sent. Hash: ${phoneCodeHash.substring(0, 10)}...`);
           socket.emit('telegram_send_code_success', { phoneCodeHash });
 
       } catch (err) {
@@ -208,7 +207,7 @@ io.on('connection', (socket) => {
       const rawPhone = payload.phone || payload.phoneNumber;
       const phoneClean = String(rawPhone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
       
-      console.log(`[${socket.id}] Logging in ${phoneClean} with hash ${phoneCodeHash?.substring(0,5)}...`);
+      console.log(`[${socket.id}] Logging in ${phoneClean} with hash ${phoneCodeHash ? phoneCodeHash.substring(0,5) : 'N/A'}...`);
 
       try {
           // Standard Login
@@ -231,7 +230,7 @@ io.on('connection', (socket) => {
           console.error(`[${socket.id}] Login Error:`, msg);
           
           if (msg.includes("SESSION_PASSWORD_NEEDED")) {
-               socket.emit('telegram_error', { method: 'login', error: "SESSION_PASSWORD_NEEDED" }); // Handle in frontend
+               socket.emit('telegram_error', { method: 'login', error: "SESSION_PASSWORD_NEEDED" }); 
           } else if (msg.includes("PHONE_CODE_EXPIRED")) {
               socket.emit('telegram_error', { method: 'login', error: "Code expired. Please restart." });
           } else {
@@ -294,11 +293,10 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
       console.log(`[SOCKET] Disconnected: ${socket.id}`);
+      // Don't immediately destroy client to allow for quick re-connects (optional optimization)
       if (clients.has(socket.id)) {
           const client = clients.get(socket.id);
           clients.delete(socket.id);
-          // Wait a bit before killing connection in case of refresh? 
-          // No, socket id changes on refresh.
           client.disconnect().catch(() => {});
       }
   });

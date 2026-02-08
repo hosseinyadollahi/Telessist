@@ -28,12 +28,14 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       
       if (msg.includes("TIMEOUT")) {
           msg = "Server is taking too long. Please try clicking Next again.";
+      } else if (msg.includes("PHONE_CODE_INVALID")) {
+          msg = "The code is invalid. Please try again or restart.";
       }
       
       setError(msg);
   };
 
-  // Step 1: Initialize Client (Connect to Server & Telegram)
+  // Step 1: Initialize Client
   const handleInitClient = async (e: React.FormEvent) => {
       e.preventDefault();
       if(!apiId || !apiHash) {
@@ -44,7 +46,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       setLoadingMsg("Initializing connection...");
       setError('');
       try {
-          // Only init ONCE. This creates the session on the backend.
           await initClient(Number(apiId), apiHash);
           setStep('phone');
       } catch (err: any) {
@@ -54,7 +55,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       }
   };
 
-  // Step 2: Send Code (Reuse existing client)
+  // Step 2: Send Code
   const handleSendCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -62,23 +63,20 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     setError('');
 
     try {
-      // FIX: Do NOT call initClient here again. It resets the backend session.
-      // Use getClient() to use the existing socket connection.
       const client = getClient(); 
-      
-      const { phoneCodeHash } = await client.sendCode(
-        {
-          apiId: Number(apiId),
-          apiHash: apiHash,
-        },
+      const res = await client.sendCode(
+        { apiId: Number(apiId), apiHash: apiHash },
         phone
       );
 
-      setPhoneCodeHash(phoneCodeHash);
-      setStep('code');
+      if (res && res.phoneCodeHash) {
+        setPhoneCodeHash(res.phoneCodeHash);
+        setStep('code');
+      } else {
+        throw new Error("Failed to get validation hash from Telegram");
+      }
     } catch (err: any) {
       handleError(err);
-      // If error says "Client not initialized", send user back to start
       if (err.message && err.message.includes("Client not initialized")) {
           setStep('creds');
       }
@@ -87,7 +85,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     }
   };
 
-  // Step 3: Verify Code (Reuse existing client)
+  // Step 3: Verify Code
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -95,8 +93,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     setError('');
 
     try {
-      const client = getClient(); // FIX: Use existing client
-
+      const client = getClient(); 
       try {
         await (client as any).signIn({
           phone: phone, 
@@ -114,20 +111,19 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         }
       }
     } catch (err: any) {
-      setError(err.message || 'Invalid code');
+      handleError(err);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Step 4: 2FA Password (Reuse existing client)
+  // Step 4: 2FA Password
   const handlePassword = async (e: React.FormEvent) => {
       e.preventDefault();
       setIsLoading(true);
       setLoadingMsg("Checking password...");
       try {
-          const client = getClient(); // FIX: Use existing client
-
+          const client = getClient(); 
           await (client as any).signIn({
               password: password,
               phone: phone,
@@ -137,7 +133,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           saveSession();
           onLoginSuccess();
       } catch (err: any) {
-          setError(err.message || "Invalid Password");
+          handleError(err);
       } finally {
           setIsLoading(false);
       }
@@ -154,7 +150,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     <div className="flex flex-col items-center justify-center min-h-screen bg-[#0f172a] text-white font-sans p-4">
       <div className="w-full max-w-md bg-[#1e293b] rounded-2xl shadow-2xl p-8 border border-slate-700 relative">
         
-        {/* Reset Button */}
         <button 
             onClick={handleResetSession}
             className="absolute top-4 right-4 p-2 text-slate-500 hover:text-red-400 transition-colors flex items-center gap-1 text-xs"
@@ -182,7 +177,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         {step === 'creds' && (
             <form onSubmit={handleInitClient} className="space-y-5">
                 <div className="bg-blue-900/30 border border-blue-500/30 p-4 rounded-xl text-xs text-blue-200 leading-relaxed">
-                    <strong>Developer Mode:</strong> Please provide your App ID and Hash from <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-blue-400 underline hover:text-blue-300">my.telegram.org</a> to connect.
+                    <strong>Developer Mode:</strong> Provide App ID and Hash from <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-blue-400 underline hover:text-blue-300">my.telegram.org</a>.
                 </div>
                 <div>
                     <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 block ml-1">App API ID</label>
@@ -275,7 +270,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
              <div className="flex flex-col items-center gap-1">
                 <WifiOff size={24} className="mb-1 opacity-70"/>
                 <span>{error}</span>
-                {error.includes("taking too long") && (
+                {(error.includes("taking too long") || error.includes("invalid") || error.includes("expired")) && (
                     <button onClick={handleResetSession} className="underline font-bold mt-1 text-red-300 hover:text-white">Start Over</button>
                 )}
              </div>
