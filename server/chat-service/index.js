@@ -25,16 +25,13 @@ const clients = new Map();
 const createTelegramClient = async (sessionStr, apiId, apiHash) => {
     let stringSession = new StringSession(sessionStr || "");
     
-    // Clean weird session strings if any
+    // Clean weird session strings
     if (stringSession.serverAddress && stringSession.serverAddress.includes('omniday')) {
         stringSession = new StringSession("");
     }
 
-    // Force DC 2 (Europe/Global) for empty sessions to reduce migration errors
+    // Force DC 2 (Europe) for empty sessions to reduce migration errors
     if (!sessionStr) {
-        stringSession.setDC(2, "149.154.167.50", 443);
-    }
-    if (stringSession.dcId === 2) {
         stringSession.setDC(2, "149.154.167.50", 443);
     }
 
@@ -58,13 +55,13 @@ io.on('connection', (socket) => {
 
   socket.on('telegram_init', async ({ apiId, apiHash, session }) => {
       try {
-          // --- IDEMPOTENCY FIX ---
-          // Prevent re-initialization if the client exists and matches the API ID.
-          // This stops the session from being reset mid-login (which causes PHONE_CODE_INVALID).
+          // --- FIX STARTS HERE ---
+          // Check if we already have a client for this socket
           if (clients.has(socket.id)) {
               const existingClient = clients.get(socket.id);
               
-              // If connected and API ID matches, reuse this client!
+              // If connected and API ID matches, DO NOT RECREATE
+              // This prevents the session from being reset, which invalidates the phone code.
               if (existingClient.connected && Number(existingClient.apiId) === Number(apiId)) {
                   console.log(`[${socket.id}] ♻️ Client already active. Reusing existing connection.`);
                   
@@ -80,7 +77,7 @@ io.on('connection', (socket) => {
                       };
                   }
                   
-                  // Return the CURRENT server session
+                  // Return success immediately with existing session
                   socket.emit('telegram_init_success', { 
                       session: existingClient.session.save(),
                       isAuth,
@@ -89,13 +86,14 @@ io.on('connection', (socket) => {
                   return; 
               }
               
-              // If different API ID, we must disconnect old and create new
+              // If configs differ, cleanup old one
               console.log(`[${socket.id}] 🔄 Config changed. Re-initializing...`);
               try { await existingClient.disconnect(); } catch(e){}
               clients.delete(socket.id);
           } else {
               console.log(`[${socket.id}] ✨ Creating new Telegram Client...`);
           }
+          // --- FIX ENDS HERE ---
 
           const client = await createTelegramClient(session, apiId, apiHash);
           clients.set(socket.id, client);
@@ -142,7 +140,7 @@ io.on('connection', (socket) => {
       } catch (err) {
           console.error(`[${socket.id}] Send Code Error: ${err.message}`);
 
-          // Auto-handle DC Migration
+          // Auto-handle DC Migration (e.g. User is on DC 4 but we are on DC 2)
           if (err.errorMessage && err.errorMessage.startsWith('PHONE_MIGRATE_')) {
               const targetDC = Number(err.errorMessage.split('_')[2]);
               console.log(`[${socket.id}] ⚠️ Migration required to DC ${targetDC}. Switching...`);
@@ -155,7 +153,8 @@ io.on('connection', (socket) => {
                   clients.delete(socket.id);
 
                   const newSession = new StringSession("");
-                  let ip = "149.154.167.50"; // DC 2
+                  // Map DC IDs to IPs
+                  let ip = "149.154.167.50"; // Default DC 2
                   if (targetDC === 1) ip = "149.154.175.53";
                   if (targetDC === 4) ip = "149.154.167.91";
                   if (targetDC === 5) ip = "91.108.56.130";
@@ -172,7 +171,7 @@ io.on('connection', (socket) => {
                   await newClient.connect();
                   clients.set(socket.id, newClient);
                   
-                  // Tell frontend to retry user action manually (safer)
+                  // Reset frontend state to force user to click Next again cleanly
                   socket.emit('telegram_init_success', { 
                       session: newClient.session.save(), 
                       isAuth: false, 
@@ -181,7 +180,7 @@ io.on('connection', (socket) => {
                   
                   socket.emit('telegram_error', { 
                       method: 'sendCode', 
-                      error: "Optimized connection. Please click Next again." 
+                      error: "Connection optimized. Please click 'Next' again." 
                   });
                   return;
 
@@ -199,7 +198,6 @@ io.on('connection', (socket) => {
   socket.on('telegram_login', async (payload) => {
       const client = clients.get(socket.id);
       if(!client) {
-          console.error(`[${socket.id}] Login attempted without initialized client.`);
           return socket.emit('telegram_error', { method: 'login', error: "Session lost. Please reload." });
       }
       
@@ -207,19 +205,16 @@ io.on('connection', (socket) => {
       const rawPhone = payload.phone || payload.phoneNumber;
       const phoneClean = String(rawPhone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
       
-      console.log(`[${socket.id}] Logging in ${phoneClean} with hash ${phoneCodeHash ? phoneCodeHash.substring(0,5) : 'N/A'}...`);
+      console.log(`[${socket.id}] Logging in ${phoneClean}...`);
 
       try {
-          // Standard Login
           if (code && phoneCodeHash) {
              await client.invoke(new Api.auth.SignIn({
                   phoneNumber: phoneClean,
                   phoneCodeHash: String(phoneCodeHash),
                   phoneCode: String(code)
               }));
-          } 
-          // 2FA Password Login
-          else if (password) {
+          } else if (password) {
               await client.signIn({ password: String(password) });
           }
 
@@ -293,7 +288,6 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
       console.log(`[SOCKET] Disconnected: ${socket.id}`);
-      // Don't immediately destroy client to allow for quick re-connects (optional optimization)
       if (clients.has(socket.id)) {
           const client = clients.get(socket.id);
           clients.delete(socket.id);
