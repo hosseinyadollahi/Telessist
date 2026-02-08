@@ -10,6 +10,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3001,
+        // UPDATE THIS LINE: postgres://USER:PASSWORD@localhost:5432/DB_NAME
         DATABASE_URL: 'postgres://telegram:secure_pass@localhost:5432/telegram_db'
       }
     },
@@ -23,6 +24,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3002,
+        // UPDATE THIS LINE: postgres://USER:PASSWORD@localhost:5432/DB_NAME
         DATABASE_URL: 'postgres://telegram:secure_pass@localhost:5432/telegram_db'
       }
     }
