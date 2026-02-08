@@ -22,7 +22,7 @@ const io = new Server(httpServer, {
 
 // --- HELPER FOR JSON LOGGING WITH BIGINT ---
 const jsonReplacer = (key, value) => {
-    if (typeof value === 'bigint') return value.toString(); // Convert BigInt to string
+    if (typeof value === 'bigint') return value.toString(); 
     if (key === 'session') return '***HIDDEN***';
     if (key === 'bytes') return '[Buffer]';
     if (key === 'token') return '***QR_TOKEN***';
@@ -54,32 +54,25 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
     
     let stringSession = new StringSession(sessionStr || "");
     
-    if (stringSession.serverAddress && stringSession.serverAddress.includes('omniday')) {
-        stringSession = new StringSession("");
-    }
+    // REMOVED: Explicit setDC. Let GramJS handle DC discovery/migration automatically.
+    // This fixes issues where users are on DC1/3/4/5 but forced to DC2.
     
-    if (!sessionStr) {
-        stringSession.setDC(2, "149.154.167.50", 443);
-    }
-    
-    // CHANGED: Use "Desktop" parameters to look like a real PC client
-    // This improves the delivery rate of login codes.
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
         connectionRetries: 5,
-        useWSS: false, 
-        deviceModel: "Desktop", // Changed from "Telegram Web Clone"
-        systemVersion: "Windows 10",
-        appVersion: "4.16.2", // Mimic a recent version
+        useWSS: false, // Node.js uses TCP
+        deviceModel: "Telessist Web", // Custom Unique Name
+        systemVersion: "Linux", // Generic Server OS
+        appVersion: "1.2.0",
         langCode: "en",
         systemLangCode: "en",
-        timeout: 30, 
+        timeout: 15, // Seconds
+        floodSleepThreshold: 60,
     });
     
-    // Store credentials explicitly on the client object to be safe
     client._customApiId = Number(apiId);
     client._customApiHash = String(apiHash);
     
-    client.setLogLevel("error");
+    client.setLogLevel("error"); // Reduce noise, we handle errors
     
     log("CLIENT", "Connecting to Telegram Servers...");
     await client.connect();
@@ -113,46 +106,47 @@ io.on('connection', (socket) => {
       socketMap.set(socket.id, deviceSessionId);
 
       try {
-          let client;
+          // FORCE CLEANUP: Always destroy old client to prevent ZOMBIE sessions causing TIMEOUTS
           if (activeSessions.has(deviceSessionId)) {
-              log("INIT", `♻️  Restoring existing session`);
-              const sessionData = activeSessions.get(deviceSessionId);
-              if (sessionData.cleanup) {
-                  clearTimeout(sessionData.cleanup);
-                  sessionData.cleanup = null;
+              log("INIT", `♻️  Cleaning up old session for this device...`);
+              const oldData = activeSessions.get(deviceSessionId);
+              if (oldData.client) {
+                  try {
+                      await oldData.client.disconnect();
+                      oldData.client.destroy(); // Ensure resources are freed
+                  } catch (e) {
+                      log("INIT_CLEANUP_ERR", e.message);
+                  }
               }
-              client = sessionData.client;
-              if(!client.connected) await client.connect();
-          } else {
-              log("INIT", `✨ Creating NEW session`);
-              if (!apiId || !apiHash) {
-                   // wait for user to login
-              } else {
-                   client = await createTelegramClient(session, apiId, apiHash);
-                   activeSessions.set(deviceSessionId, { client, cleanup: null, passwordResolver: null });
-              }
+              activeSessions.delete(deviceSessionId);
           }
 
-          if (client) {
-              const isAuth = await client.isUserAuthorized();
-              log("INIT", `User Authorized: ${isAuth}`);
-              
-              let me = null;
-              if(isAuth) {
-                 const user = await client.getMe();
-                 me = {
-                     id: user.id.toString(),
-                     username: user.username,
-                     firstName: user.firstName,
-                     phone: user.phone
-                 };
-              }
+          log("INIT", `✨ Creating FRESH session`);
+          if (!apiId || !apiHash) {
+               // Waiting for credentials
+          } else {
+               const client = await createTelegramClient(session, apiId, apiHash);
+               activeSessions.set(deviceSessionId, { client, cleanup: null, passwordResolver: null });
 
-              socket.emit('telegram_init_success', { 
-                  session: client.session.save(),
-                  isAuth,
-                  user: me
-              });
+               const isAuth = await client.isUserAuthorized();
+               log("INIT", `User Authorized: ${isAuth}`);
+               
+               let me = null;
+               if(isAuth) {
+                  const user = await client.getMe();
+                  me = {
+                      id: user.id.toString(),
+                      username: user.username,
+                      firstName: user.firstName,
+                      phone: user.phone
+                  };
+               }
+
+               socket.emit('telegram_init_success', { 
+                   session: client.session.save(),
+                   isAuth,
+                   user: me
+               });
           }
       } catch (err) {
           log("INIT_ERROR", err.message);
@@ -170,38 +164,26 @@ io.on('connection', (socket) => {
       log("QR", "Starting QR Login flow...");
 
       try {
-          // Ensure connected
-          if(!client.connected) {
-              log("QR", "Client not connected, reconnecting...");
-              await client.connect();
-          }
+          if(!client.connected) await client.connect();
 
-          // Use apiId from client properties or our custom backup
           const apiId = client.apiId || client._customApiId;
           const apiHash = client.apiHash || client._customApiHash;
           
-          log("QR", `Using Credentials - ID: ${apiId}, Hash: ${apiHash ? '***' : 'Missing'}`);
-
           if (!apiId || !apiHash) {
-              throw new Error("API Credentials missing from client instance. Please reload and enter credentials.");
+              throw new Error("API Credentials missing. Reload and try again.");
           }
 
-          // Define callback functions
           const qrCodeCallback = async ({ token, expires }) => {
               log("QR", "New QR Token generated");
               const tokenBase64 = token.toString('base64')
                   .replace(/\+/g, '-')
                   .replace(/\//g, '_')
                   .replace(/=+$/, '');
-              
-              socket.emit('telegram_qr_generated', { 
-                  token: tokenBase64, 
-                  expires: expires 
-              });
+              socket.emit('telegram_qr_generated', { token: tokenBase64, expires: expires });
           };
 
           const passwordCallback = async (hint) => {
-              log("QR", "2FA Password needed for QR Login");
+              log("QR", "2FA Password needed");
               socket.emit('telegram_password_needed', { hint });
               return new Promise((resolve, reject) => {
                   if (sessionData) {
@@ -212,25 +194,18 @@ io.on('connection', (socket) => {
                           }
                       }, 180000); 
                   } else {
-                      reject(new Error("Session lost during 2FA"));
+                      reject(new Error("Session lost"));
                   }
               });
           };
 
-          const onErrorCallback = (err) => {
-             log("QR_ERROR_CB", err.message || err);
-          };
-
-          // Explicitly construct params to avoid any 'undefined' issues
-          const loginParams = {
+          const user = await client.signInUserWithQrCode({
               apiId: Number(apiId),
               apiHash: String(apiHash),
               qrCode: qrCodeCallback,
               password: passwordCallback,
-              onError: onErrorCallback
-          };
-
-          const user = await client.signInUserWithQrCode(loginParams);
+              onError: (err) => log("QR_ERROR_CB", err.message || err)
+          });
 
           log("QR", "QR Login Successful!");
           socket.emit('telegram_login_success', { session: client.session.save() });
@@ -244,37 +219,27 @@ io.on('connection', (socket) => {
   socket.on('telegram_send_password', ({ password }) => {
       const sessionData = getSessionData();
       if (sessionData && sessionData.passwordResolver) {
-          log("QR", "Received 2FA password from user");
           sessionData.passwordResolver(password);
-          sessionData.passwordResolver = null; // Clear it
+          sessionData.passwordResolver = null;
       } else {
-          log("QR", "Received password but no resolver waiting. Trying standard login...");
-          // Fallback for standard login
+          // Fallback login
           const client = getClient();
           if(client) {
               client.signIn({ password: String(password) })
-                .then(() => {
-                    socket.emit('telegram_login_success', { session: client.session.save() });
-                })
-                .catch(err => {
-                    socket.emit('telegram_error', { method: 'login', error: err.message });
-                });
+                .then(() => socket.emit('telegram_login_success', { session: client.session.save() }))
+                .catch(err => socket.emit('telegram_error', { method: 'login', error: err.message }));
           }
       }
   });
-  // ---------------------
 
   socket.on('telegram_send_code', async ({ phone }) => {
       const client = getClient();
-      if(!client) {
-          return socket.emit('telegram_error', { error: "Session expired or not initialized" });
-      }
+      if(!client) return socket.emit('telegram_error', { error: "Session not initialized" });
 
       const phoneClean = String(phone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
       log("AUTH", `Sending code to: ${phoneClean}`);
 
       try {
-          // Add explicit error handling for invalid sessions before call
           if (!client.connected) {
              log("AUTH", "Client disconnected. Reconnecting...");
              await client.connect();
@@ -285,16 +250,14 @@ io.on('connection', (socket) => {
               apiHash: String(client.apiHash),
           }, phoneClean);
           
-          // LOG FULL RESPONSE with BigInt support
-          log("AUTH_RESULT", "Telegram Raw Response:", result);
+          log("AUTH_RESULT", "Telegram Response:", result);
 
-          // Check if response actually contains the hash
           if (!result || !result.phoneCodeHash) {
-              throw new Error("Telegram did not return a phoneCodeHash. Response might be incomplete.");
+              throw new Error("Invalid response from Telegram (No hash).");
           }
 
           const type = result.type?.className || 'unknown';
-          const isApp = type.includes('App'); // SentCodeTypeApp
+          const isApp = type.includes('App'); 
           
           socket.emit('telegram_send_code_success', { 
               phoneCodeHash: result.phoneCodeHash,
@@ -308,9 +271,9 @@ io.on('connection', (socket) => {
           if (err.message && err.message.includes('FLOOD_WAIT')) {
               const seconds = err.seconds || parseInt(err.message.match(/\d+/)[0]) || 60;
               socket.emit('telegram_error', { method: 'sendCode', error: `Too many attempts. Wait ${seconds}s.` });
-              return;
+          } else {
+              socket.emit('telegram_error', { method: 'sendCode', error: err.message });
           }
-          socket.emit('telegram_error', { method: 'sendCode', error: err.message });
       }
   });
 
@@ -322,7 +285,7 @@ io.on('connection', (socket) => {
       const rawPhone = payload.phone || payload.phoneNumber;
       const phoneClean = String(rawPhone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
       
-      log("LOGIN", `Attempting login for ${phoneClean} with code: ${code}`);
+      log("LOGIN", `Login attempt for ${phoneClean}`);
 
       try {
           if (code && phoneCodeHash) {
@@ -339,12 +302,10 @@ io.on('connection', (socket) => {
           socket.emit('telegram_login_success', { session: client.session.save() });
 
       } catch (err) {
-          const msg = err.message || err.errorMessage || "Unknown Error";
+          const msg = err.message || "Unknown Error";
           log("LOGIN_ERROR", msg);
           if (msg.includes("SESSION_PASSWORD_NEEDED")) {
                socket.emit('telegram_error', { method: 'login', error: "SESSION_PASSWORD_NEEDED" }); 
-          } else if (msg.includes("PHONE_CODE_EXPIRED")) {
-              socket.emit('telegram_error', { method: 'login', error: "Code expired. Please restart." });
           } else {
               socket.emit('telegram_error', { method: 'login', error: msg });
           }
@@ -355,16 +316,20 @@ io.on('connection', (socket) => {
       const sessionId = socketMap.get(socket.id);
       if (sessionId && activeSessions.has(sessionId)) {
           const sessionData = activeSessions.get(sessionId);
+          // Wait briefly before killing session to allow page reload
           sessionData.cleanup = setTimeout(() => {
               if (sessionData.client) {
+                  log("CLEANUP", `Destroying session ${sessionId}`);
                   sessionData.client.disconnect().catch(() => {});
+                  sessionData.client.destroy().catch(() => {});
               }
               activeSessions.delete(sessionId);
-          }, 120000); 
+          }, 60000); 
       }
       socketMap.delete(socket.id);
   });
   
+  // Chat Handlers
   socket.on('telegram_get_dialogs', async () => {
       const client = getClient();
       if(!client) return;
