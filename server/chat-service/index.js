@@ -184,12 +184,16 @@ io.on('connection', (socket) => {
       }
   });
 
-  socket.on('telegram_login', async ({ phone, code, phoneCodeHash, password }) => {
+  socket.on('telegram_login', async (payload) => {
       const client = clients.get(socket.id);
       if(!client) return;
       
+      const { code, phoneCodeHash, password } = payload;
+      // Accept either 'phone' or 'phoneNumber' to be robust
+      const rawPhone = payload.phone || payload.phoneNumber;
+      
       // CRITICAL: Clean phone number to avoid PHONE_NUMBER_INVALID error
-      const phoneClean = String(phone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
+      const phoneClean = String(rawPhone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
       console.log(`[${socket.id}] Logging in with ${phoneClean}...`);
 
       try {

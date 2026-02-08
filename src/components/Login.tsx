@@ -91,7 +91,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
       try {
         await (client as any).signIn({
-          phoneNumber: phone,
+          phone: phone, // CORRECTED: key must be 'phone' to match server destructuring
           phoneCodeHash: phoneCodeHash,
           phoneCode: code,
         });
@@ -122,7 +122,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
           await (client as any).signIn({
               password: password,
-              phoneNumber: phone,
+              phone: phone, // CORRECTED: key must be 'phone'
               phoneCodeHash: phoneCodeHash,
               phoneCode: code
           });
