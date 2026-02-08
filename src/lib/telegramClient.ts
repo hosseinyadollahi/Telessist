@@ -14,11 +14,13 @@ export const initClient = async (apiId: number, apiHash: string) => {
 
   const stringSession = new StringSession(sessionStr);
   
-  console.log("Initializing Telegram Client with WSS...");
+  console.log("Initializing Telegram Client...");
   
+  // Basic configuration for browser environment
   client = new TelegramClient(stringSession, apiId, apiHash, {
     connectionRetries: 5,
-    useWSS: true, // Force WebSockets to connect directly to Telegram
+    useWSS: true, // Crucial for browser: forces use of Telegram's WebSocket endpoints
+    testServers: false, // Force production servers
     deviceModel: "Telegram Web Clone",
     systemVersion: "1.0.0",
     appVersion: "1.0.0",
@@ -28,7 +30,6 @@ export const initClient = async (apiId: number, apiHash: string) => {
   await client.connect();
   
   // Save session on changes
-  // Fix: Cast session to any to access save() because TS definition might return void
   const currentSession = (client.session as any).save();
   if (currentSession !== sessionStr) {
      localStorage.setItem("telegram_session", currentSession);
@@ -42,7 +43,6 @@ export const getClient = () => client;
 
 export const saveSession = () => {
     if (client) {
-        // Fix: Cast session to any
         const currentSession = (client.session as any).save();
         localStorage.setItem("telegram_session", currentSession);
     }
