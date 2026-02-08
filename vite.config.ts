@@ -6,27 +6,39 @@ import path from 'path'
 export default defineConfig({
   plugins: [react()],
   define: {
-    // 'global': 'window', // Handled in index.html, removing to prevent conflicts
-    'process.env': {}, // Polyfill for libraries accessing process.env
+    'process.env': {}, 
+  },
+  server: {
+    proxy: {
+      // Proxy Socket.io connection to Chat Service
+      '/socket.io': {
+        target: 'http://localhost:3002',
+        ws: true,
+        changeOrigin: true
+      },
+      // Proxy HTTP API requests to Chat Service
+      '/api/chat': {
+        target: 'http://localhost:3002',
+        changeOrigin: true
+      },
+      // Proxy HTTP API requests to Auth Service (if needed)
+      '/api/auth': {
+        target: 'http://localhost:3001',
+        changeOrigin: true
+      }
+    }
   },
   resolve: {
     alias: {
-      // Basic Node Polyfills
       buffer: 'buffer/',
       util: 'util/',
       events: 'events',
       assert: 'assert',
       process: 'process/browser', 
-      
-      // Crypto Polyfill (Crucial for Telegram Auth)
       crypto: 'crypto-browserify',
-      
-      // Map Node modules to Browserify equivalents
       path: 'path-browserify',
       stream: 'stream-browserify',
       os: 'os-browserify',
-      
-      // Mock modules that don't exist in browser
       fs: path.resolve(__dirname, 'src/lib/empty-polyfill.js'),
       net: path.resolve(__dirname, 'src/lib/empty-polyfill.js'),
       tls: path.resolve(__dirname, 'src/lib/empty-polyfill.js'),
@@ -35,7 +47,6 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: [
-        'telegram', 
         'buffer', 
         'util', 
         'events', 
@@ -55,8 +66,5 @@ export default defineConfig({
     commonjsOptions: {
       transformMixedEsModules: true,
     },
-    rollupOptions: {
-        plugins: []
-    }
   }
 })

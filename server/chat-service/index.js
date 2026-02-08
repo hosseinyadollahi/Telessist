@@ -12,51 +12,48 @@ const httpServer = createServer(app);
 const PORT = process.env.PORT || 3002;
 
 app.use(helmet());
-app.use(cors());
+app.use(cors({
+    origin: "*", // Allow all in dev, restrict in prod
+    methods: ["GET", "POST"]
+}));
 app.use(express.json());
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "*", 
+    origin: "*", // Crucial for allowing Vite frontend to connect
     methods: ["GET", "POST"]
   }
 });
 
-// Store clients in memory: Map<SocketID, TelegramClient>
-// In a real production scale app, you'd manage these differently (e.g. separate worker processes)
 const clients = new Map();
 
 io.on('connection', (socket) => {
   console.log(`[SOCKET] New Client Connected: ${socket.id}`);
 
-  // --- 1. INITIALIZE CLIENT ---
   socket.on('telegram_init', async ({ apiId, apiHash, session }) => {
-      console.log(`[${socket.id}] Initializing Telegram Client...`);
+      console.log(`[${socket.id}] Request: telegram_init`);
       try {
+          // If session is empty string, pass empty string to StringSession
           const stringSession = new StringSession(session || "");
+          
+          console.log(`[${socket.id}] Creating backend Telegram Client (Finland)...`);
           const client = new TelegramClient(stringSession, Number(apiId), apiHash, {
               connectionRetries: 5,
-              useWSS: false, // Node.js environments use raw TCP usually, or HTTP
+              useWSS: false, // Server-side: Use direct TCP
               deviceModel: "Telegram Web Server",
-              systemVersion: "1.0.0",
+              systemVersion: "Linux",
               appVersion: "1.0.0",
           });
 
-          // Connect
           await client.connect();
-          
           clients.set(socket.id, client);
           
-          // Return the updated session string if it changed (e.g. after login)
           const currentSession = client.session.save();
-          
-          // Check if authorized
           const isAuth = await client.isUserAuthorized();
-
+          
           let me = null;
           if(isAuth) {
              const user = await client.getMe();
-             // Serialize User
              me = {
                  id: user.id.toString(),
                  username: user.username,
@@ -70,7 +67,7 @@ io.on('connection', (socket) => {
               isAuth: isAuth,
               user: me
           });
-          console.log(`[${socket.id}] Client initialized. Auth: ${isAuth}`);
+          console.log(`[${socket.id}] Init Success. Auth: ${isAuth}`);
 
       } catch (err) {
           console.error(`[${socket.id}] Init Error:`, err);
@@ -78,8 +75,8 @@ io.on('connection', (socket) => {
       }
   });
 
-  // --- 2. AUTH FLOW ---
   socket.on('telegram_send_code', async ({ phone }) => {
+      console.log(`[${socket.id}] Request: send_code to ${phone}`);
       const client = clients.get(socket.id);
       if(!client) return;
       try {
@@ -89,11 +86,13 @@ io.on('connection', (socket) => {
           }, phone);
           socket.emit('telegram_send_code_success', { phoneCodeHash });
       } catch (err) {
+          console.error(`[${socket.id}] Send Code Error:`, err);
           socket.emit('telegram_error', { method: 'sendCode', error: err.message });
       }
   });
 
   socket.on('telegram_login', async ({ phone, code, phoneCodeHash, password }) => {
+      console.log(`[${socket.id}] Request: login`);
       const client = clients.get(socket.id);
       if(!client) return;
       try {
@@ -103,10 +102,10 @@ io.on('connection', (socket) => {
               phoneCode: code
           }));
           
-          // Save session
           const session = client.session.save();
           socket.emit('telegram_login_success', { session });
       } catch (err) {
+          console.error(`[${socket.id}] Login Error:`, err.message);
           if (err.message && err.message.includes("SESSION_PASSWORD_NEEDED")) {
               if (password) {
                   try {
@@ -126,13 +125,11 @@ io.on('connection', (socket) => {
       }
   });
 
-  // --- 3. DATA FETCHING ---
   socket.on('telegram_get_dialogs', async () => {
       const client = clients.get(socket.id);
       if(!client) return;
       try {
           const dialogs = await client.getDialogs({ limit: 20 });
-          // Serialize for frontend
           const serialized = dialogs.map(d => ({
              id: d.id ? d.id.toString() : '0',
              title: d.title,
@@ -141,7 +138,7 @@ io.on('connection', (socket) => {
              message: d.message ? { message: d.message.message, date: d.message.date } : null,
              isGroup: d.isGroup,
              isUser: d.isUser,
-             entityId: d.entity ? d.entity.id.toString() : null // Use this for sending messages
+             entityId: d.entity ? d.entity.id.toString() : null
           }));
           socket.emit('telegram_dialogs_data', serialized);
       } catch (err) {
@@ -154,8 +151,6 @@ io.on('connection', (socket) => {
       const client = clients.get(socket.id);
       if(!client) return;
       try {
-          // chatId usually needs to be BigInt or Entity for GramJS
-          // We accept string from frontend and convert
           const msgs = await client.getMessages(chatId, { limit: 50 });
           const serialized = msgs.map(m => ({
               id: m.id,
@@ -177,7 +172,6 @@ io.on('connection', (socket) => {
        try {
            await client.sendMessage(chatId, { message });
            socket.emit('telegram_message_sent');
-           // Optionally trigger a refresh of messages
        } catch (err) {
            socket.emit('telegram_error', { method: 'sendMessage', error: err.message });
        }
