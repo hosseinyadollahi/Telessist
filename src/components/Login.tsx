@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, Lock, Smartphone, Key, WifiOff, Trash2, AlertTriangle, MessageSquare } from 'lucide-react';
+import { ArrowRight, Lock, Smartphone, Key, WifiOff, Trash2, AlertTriangle, MessageSquare, Send } from 'lucide-react';
 import { initClient, getClient, saveSession, clearSession } from '../lib/telegramClient';
 
 interface LoginProps {
@@ -248,13 +248,20 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
         {(step === 'code' || step === 'password') && (
           <form onSubmit={step === 'code' ? handleVerify : handlePassword} className="space-y-8">
-             {/* Delivery Warning */}
+             
+             {/* --- EMPHASIZED DELIVERY WARNING --- */}
              {step === 'code' && deliveryMethod === 'app' && (
-                 <div className="bg-yellow-500/20 border border-yellow-500/30 p-3 rounded-xl flex gap-3 items-start">
-                     <AlertTriangle className="text-yellow-400 shrink-0" size={20} />
-                     <div className="text-xs text-yellow-100">
-                         <strong>Check Telegram App!</strong> <br/>
-                         The code was sent to your logged-in Telegram devices, NOT via SMS.
+                 <div className="bg-blue-500 p-4 rounded-xl flex flex-col gap-3 items-center text-center shadow-lg shadow-blue-500/20 animate-in fade-in slide-in-from-top-4 duration-500">
+                     <div className="bg-white/20 p-3 rounded-full">
+                         <Send className="text-white" size={32} />
+                     </div>
+                     <div>
+                         <h3 className="font-bold text-lg text-white mb-1">Check Telegram App!</h3>
+                         <p className="text-sm text-blue-100 leading-relaxed">
+                            We sent the code to the <strong>Telegram App</strong> on your other device (Phone/PC).
+                            <br/>
+                            <span className="opacity-75 text-xs block mt-1">(It is NOT an SMS)</span>
+                         </p>
                      </div>
                  </div>
              )}

