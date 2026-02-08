@@ -6,7 +6,8 @@ import path from 'path'
 export default defineConfig({
   plugins: [react()],
   define: {
-    "global": "window",
+    // 'global': 'window', // Handled in index.html, removing to prevent conflicts
+    'process.env': {}, // Polyfill for libraries accessing process.env
   },
   resolve: {
     alias: {

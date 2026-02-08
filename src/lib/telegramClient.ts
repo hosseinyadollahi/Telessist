@@ -17,10 +17,11 @@ export const initClient = async (apiId: number, apiHash: string) => {
   console.log("Initializing Telegram Client...");
   
   // Basic configuration for browser environment
+  // We use useWSS: true to enforce WebSocket connections.
+  // If connection fails, it might be due to network blocking (need VPN)
   client = new TelegramClient(stringSession, apiId, apiHash, {
     connectionRetries: 5,
-    useWSS: true, // Crucial for browser: forces use of Telegram's WebSocket endpoints
-    testServers: false, // Force production servers
+    useWSS: true, 
     deviceModel: "Telegram Web Clone",
     systemVersion: "1.0.0",
     appVersion: "1.0.0",

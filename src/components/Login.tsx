@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, Lock, Settings, Smartphone, Key } from 'lucide-react';
+import { ArrowRight, Lock, Settings, Smartphone, Key, AlertTriangle } from 'lucide-react';
 import { initClient, saveSession } from '../lib/telegramClient';
 
 interface LoginProps {
@@ -34,7 +34,11 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           setStep('phone');
       } catch (err: any) {
           console.error(err);
-          setError("Failed to initialize: " + (err.message || "Connection timeout"));
+          let msg = err.message || "Connection timeout";
+          if (msg.includes("TIMEOUT")) {
+              msg = "Connection timed out. Please check your internet or try using a VPN.";
+          }
+          setError(msg);
       } finally {
           setIsLoading(false);
       }
@@ -61,7 +65,11 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       setStep('code');
     } catch (err: any) {
       console.error(err);
-      setError(err.message || 'Failed to send code. Check console.');
+      let msg = err.message || "Failed to send code.";
+      if (msg.includes("TIMEOUT")) {
+          msg = "Connection timed out. Please check your internet or try using a VPN.";
+      }
+      setError(msg);
     } finally {
       setIsLoading(false);
     }
@@ -232,8 +240,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         )}
 
         {error && (
-          <div className="mt-6 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm text-center animate-pulse">
-            {error}
+          <div className="mt-6 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm flex items-center justify-center gap-2 animate-pulse">
+            <AlertTriangle size={18} /> {error}
           </div>
         )}
 
