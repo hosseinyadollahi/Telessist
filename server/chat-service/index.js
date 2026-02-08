@@ -19,25 +19,19 @@ const io = new Server(httpServer, {
   cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-// --- SESSION MANAGEMENT ---
 // Map<deviceSessionId, { client: TelegramClient, cleanup: NodeJS.Timeout }>
 const activeSessions = new Map();
 // Map<socketId, deviceSessionId>
 const socketMap = new Map();
 
-// Helper to create a client instance
 const createTelegramClient = async (sessionStr, apiId, apiHash) => {
     let stringSession = new StringSession(sessionStr || "");
-    
     if (stringSession.serverAddress && stringSession.serverAddress.includes('omniday')) {
         stringSession = new StringSession("");
     }
-
-    // Force DC 2 (Europe/Global) for empty sessions
     if (!sessionStr) {
         stringSession.setDC(2, "149.154.167.50", 443);
     }
-
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
         connectionRetries: 5,
         useWSS: false, 
@@ -46,9 +40,7 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
         appVersion: "1.0.0",
         timeout: 30, 
     });
-    
     client.setLogLevel("error");
-    
     await client.connect();
     return client;
 };
@@ -56,36 +48,35 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
 io.on('connection', (socket) => {
   console.log(`[SOCKET] Connected: ${socket.id}`);
 
-  // Retrieve the client based on the socket's mapped session ID
   const getClient = () => {
       const sessionId = socketMap.get(socket.id);
       if (!sessionId) return null;
       return activeSessions.get(sessionId)?.client;
   };
 
-  socket.on('telegram_init', async ({ apiId, apiHash, session, deviceSessionId }) => {
+  socket.on('telegram_init', async (data) => {
+      // DEBUG LOG
+      console.log(`[${socket.id}] Init Payload Received:`, JSON.stringify(data, null, 2));
+
+      const { apiId, apiHash, session, deviceSessionId } = data || {};
+
       if (!deviceSessionId) {
-          return socket.emit('telegram_error', { method: 'init', error: "Missing deviceSessionId" });
+          console.error(`[${socket.id}] ❌ Missing deviceSessionId in payload`);
+          return socket.emit('telegram_error', { method: 'init', error: "Missing deviceSessionId. Please clear cache and reload." });
       }
 
-      console.log(`[${socket.id}] Init for Session: ${deviceSessionId}`);
-      
-      // Map this socket to the device session
+      console.log(`[${socket.id}] ✅ Init for Session: ${deviceSessionId}`);
       socketMap.set(socket.id, deviceSessionId);
 
       try {
           let client;
-          
           if (activeSessions.has(deviceSessionId)) {
               console.log(`[${socket.id}] ♻️ Restoring active session ${deviceSessionId}`);
               const sessionData = activeSessions.get(deviceSessionId);
-              
-              // Cancel any pending cleanup (user reconnected!)
               if (sessionData.cleanup) {
                   clearTimeout(sessionData.cleanup);
                   sessionData.cleanup = null;
               }
-              
               client = sessionData.client;
           } else {
               console.log(`[${socket.id}] ✨ Creating NEW session ${deviceSessionId}`);
@@ -134,8 +125,7 @@ io.on('connection', (socket) => {
 
       } catch (err) {
           console.error(`[${socket.id}] Send Code Error: ${err.message}`);
-
-          // DC Migration
+          
           if (err.errorMessage && err.errorMessage.startsWith('PHONE_MIGRATE_')) {
               const targetDC = Number(err.errorMessage.split('_')[2]);
               console.log(`[${socket.id}] ⚠️ Migration required to DC ${targetDC}`);
@@ -146,11 +136,9 @@ io.on('connection', (socket) => {
                   const apiId = oldClient.apiId;
                   const apiHash = oldClient.apiHash;
 
-                  // Disconnect old
                   await oldClient.disconnect();
                   activeSessions.delete(sessionId);
 
-                  // Create new with correct DC
                   const newSession = new StringSession("");
                   let ip = "149.154.167.50"; 
                   if (targetDC === 1) ip = "149.154.175.53";
@@ -166,9 +154,7 @@ io.on('connection', (socket) => {
                   newClient.setLogLevel("error");
                   await newClient.connect();
                   
-                  // Store under SAME session ID
                   activeSessions.set(sessionId, { client: newClient, cleanup: null });
-                  
                   socket.emit('telegram_error', { 
                       method: 'sendCode', 
                       error: "Optimized connection. Please click Next again." 
@@ -176,7 +162,6 @@ io.on('connection', (socket) => {
                   return;
               }
           }
-
           socket.emit('telegram_error', { method: 'sendCode', error: err.message || "Failed to send code" });
       }
   });
@@ -207,7 +192,6 @@ io.on('connection', (socket) => {
       } catch (err) {
           const msg = err.message || err.errorMessage || "Unknown Error";
           console.error(`[${socket.id}] Login Error:`, msg);
-          
           if (msg.includes("SESSION_PASSWORD_NEEDED")) {
                socket.emit('telegram_error', { method: 'login', error: "SESSION_PASSWORD_NEEDED" }); 
           } else if (msg.includes("PHONE_CODE_EXPIRED")) {
@@ -276,9 +260,6 @@ io.on('connection', (socket) => {
       
       if (sessionId && activeSessions.has(sessionId)) {
           const sessionData = activeSessions.get(sessionId);
-          
-          // Set a cleanup timeout (e.g., 2 minutes)
-          // This keeps the Telegram connection alive even if the user refreshes or internet blips
           sessionData.cleanup = setTimeout(() => {
               console.log(`[CLEANUP] Destroying inactive session ${sessionId}`);
               if (sessionData.client) {
@@ -287,7 +268,6 @@ io.on('connection', (socket) => {
               activeSessions.delete(sessionId);
           }, 120000); 
       }
-      
       socketMap.delete(socket.id);
   });
 });

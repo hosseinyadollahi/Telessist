@@ -9,16 +9,33 @@ const generateUUID = () => {
 };
 
 // Get or create a persistent ID for this browser
+// Robust version: handles localStorage failures (e.g. Incognito mode)
 const getDeviceSessionId = () => {
-    let id = localStorage.getItem('device_session_id');
-    if (!id) {
-        id = generateUUID();
-        localStorage.setItem('device_session_id', id);
+    let id;
+    try {
+        id = localStorage.getItem('device_session_id');
+        if (!id) {
+            id = generateUUID();
+            localStorage.setItem('device_session_id', id);
+        }
+    } catch (e) {
+        console.warn("[TelegramClient] LocalStorage access failed or restricted. Using memory fallback.");
+        // Fallback to global variable for this session
+        if (!(window as any)._tempSessionId) {
+            (window as any)._tempSessionId = generateUUID();
+        }
+        id = (window as any)._tempSessionId;
     }
     return id;
 };
 
-let sessionStr = localStorage.getItem("telegram_session") || "";
+// Safely get initial session
+let sessionStr = "";
+try {
+    sessionStr = localStorage.getItem("telegram_session") || "";
+} catch (e) {
+    console.warn("Could not read telegram_session from storage");
+}
 
 // Helper to wait for a specific event
 const waitForEvent = (eventName: string, errorEventName = 'telegram_error', timeout = 30000): Promise<any> => {
@@ -34,7 +51,6 @@ const waitForEvent = (eventName: string, errorEventName = 'telegram_error', time
         };
 
         const onError = (data: any) => {
-             // Optional: check if error matches request
              cleanup();
              reject(new Error(data.error || "Unknown Error"));
         };
@@ -54,7 +70,12 @@ export const initClient = async (apiId: number, apiHash: string) => {
     connectSocket();
     
     const deviceSessionId = getDeviceSessionId();
+    console.log("[TelegramClient] Initializing with Device ID:", deviceSessionId);
     
+    if (!deviceSessionId) {
+        throw new Error("Failed to generate Device Session ID");
+    }
+
     // Send init request with stable device ID
     socket.emit('telegram_init', { apiId, apiHash, session: sessionStr, deviceSessionId });
     
@@ -64,38 +85,33 @@ export const initClient = async (apiId: number, apiHash: string) => {
     // Update session if changed
     if (res.session && res.session !== sessionStr) {
         sessionStr = res.session;
-        localStorage.setItem("telegram_session", sessionStr);
+        try {
+            localStorage.setItem("telegram_session", sessionStr);
+        } catch(e) {}
     }
     
-    return createProxyClient(res.user); // Return a proxy object
+    return createProxyClient(res.user); 
 };
 
 export const getClient = () => {
-    // Return a proxy object
     return createProxyClient(null);
 };
 
-// A proxy object that looks like the GramJS client but sends socket events
 const createProxyClient = (userCtx: any) => {
     return {
         me: userCtx,
-        
-        getMe: async () => {
-             return userCtx;
-        },
+        getMe: async () => userCtx,
 
         sendCode: async (params: any, phone: string) => {
             socket.emit('telegram_send_code', { phone });
-            // Increase timeout to 120s for DC migrations
             return await waitForEvent('telegram_send_code_success', 'telegram_error', 120000);
         },
 
         signIn: async (params: any) => {
              socket.emit('telegram_login', params);
              const res: any = await waitForEvent('telegram_login_success', 'telegram_error', 60000);
-             // Save session
              if (res.session) {
-                 localStorage.setItem("telegram_session", res.session);
+                 try { localStorage.setItem("telegram_session", res.session); } catch(e){}
              }
              return res;
         },
@@ -121,12 +137,9 @@ const createProxyClient = (userCtx: any) => {
     };
 };
 
-export const saveSession = () => {
-    // Session is saved automatically in localstorage
-};
+export const saveSession = () => {};
 
 export const clearSession = () => {
-    localStorage.removeItem("telegram_session");
-    // Do NOT clear device_session_id to maintain connection stability
+    try { localStorage.removeItem("telegram_session"); } catch(e) {}
     window.location.reload();
 };
