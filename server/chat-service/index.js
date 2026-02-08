@@ -87,7 +87,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('telegram_send_code', async ({ phone }) => {
-      console.log(`[${socket.id}] Sending code to ${phone}...`);
+      // Clean phone number (remove spaces, parentheses)
+      const phoneClean = String(phone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
+      console.log(`[${socket.id}] Sending code to ${phoneClean}...`);
+
       let client = clients.get(socket.id);
       if(!client) return socket.emit('telegram_error', { error: "Client not initialized" });
 
@@ -96,7 +99,7 @@ io.on('connection', (socket) => {
           const sendCodePromise = client.sendCode({
               apiId: Number(client.apiId),
               apiHash: String(client.apiHash),
-          }, String(phone));
+          }, phoneClean);
 
           // 15s timeout for backend operation
           const timeoutPromise = new Promise((_, reject) => 
@@ -127,10 +130,8 @@ io.on('connection', (socket) => {
                   try {
                       console.log(`[${socket.id}] 🔄 Re-creating client on DC 2 (149.154.167.50:443)...`);
                       
-                      // Explicitly cast to prevent CastError
                       const apiId = Number(client.apiId);
                       const apiHash = String(client.apiHash);
-                      const phoneStr = String(phone);
 
                       // Kill old client
                       await client.disconnect();
@@ -162,10 +163,10 @@ io.on('connection', (socket) => {
 
                       console.log(`[${socket.id}] 🔄 Retrying sendCode on new connection...`);
                       
-                      // Strict casting for sendCode
+                      // Use clean phone
                       const { phoneCodeHash } = await newClient.sendCode(
                           { apiId: apiId, apiHash: apiHash }, 
-                          phoneStr
+                          phoneClean
                       );
                       
                       socket.emit('telegram_send_code_success', { phoneCodeHash });
@@ -186,32 +187,32 @@ io.on('connection', (socket) => {
   socket.on('telegram_login', async ({ phone, code, phoneCodeHash, password }) => {
       const client = clients.get(socket.id);
       if(!client) return;
+      
+      const phoneClean = String(phone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
+
       try {
-          await client.invoke(new Api.auth.SignIn({
-              phoneNumber: String(phone),
+          // Use high-level signIn which handles format matching and 2FA gracefully
+          const params = {
+              phoneNumber: phoneClean,
               phoneCodeHash: String(phoneCodeHash),
-              phoneCode: String(code)
-          }));
+              phoneCode: String(code),
+          };
+          
+          if (password) {
+              params.password = String(password);
+          }
+
+          await client.signIn(params);
           socket.emit('telegram_login_success', { session: client.session.save() });
+
       } catch (err) {
-          if (err.message && err.message.includes("SESSION_PASSWORD_NEEDED")) {
-              if (password) {
-                  try {
-                      await client.signIn({ 
-                          password: String(password), 
-                          phoneNumber: String(phone), 
-                          phoneCodeHash: String(phoneCodeHash), 
-                          phoneCode: String(code) 
-                        });
-                      socket.emit('telegram_login_success', { session: client.session.save() });
-                  } catch (pwErr) {
-                      socket.emit('telegram_error', { method: 'login_password', error: pwErr.message });
-                  }
-              } else {
-                  socket.emit('telegram_password_needed');
-              }
+          const msg = err.message || err.errorMessage || "Unknown Error";
+          
+          if (msg.includes("SESSION_PASSWORD_NEEDED")) {
+              socket.emit('telegram_password_needed');
           } else {
-              socket.emit('telegram_error', { method: 'login', error: err.message });
+              console.error(`[${socket.id}] Login Error:`, err);
+              socket.emit('telegram_error', { method: 'login', error: msg });
           }
       }
   });
