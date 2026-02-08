@@ -157,10 +157,24 @@ io.on('connection', (socket) => {
       log("QR", "Starting QR Login flow...");
 
       try {
+          // Ensure connected
+          if(!client.connected) {
+              log("QR", "Client not connected, reconnecting...");
+              await client.connect();
+          }
+
+          // Use apiId from client properties (might be stored as _apiId in some versions, but apiId getter exists)
+          const apiId = client.apiId;
+          const apiHash = client.apiHash;
+          
+          if (!apiId || !apiHash) {
+              throw new Error("API Credentials missing from client instance");
+          }
+
           // This function keeps running until success or error
           const user = await client.signInUserWithQrCode({
-              apiId: Number(client.apiId),
-              apiHash: String(client.apiHash),
+              apiId: Number(apiId),
+              apiHash: String(apiHash),
               qrCode: async ({ token, expires }) => {
                   log("QR", "New QR Token generated");
                   // Convert token buffer to base64url format for tg:// link
@@ -175,8 +189,9 @@ io.on('connection', (socket) => {
                   });
               },
               onError: (err) => {
-                  log("QR_ERROR", err.message);
-                  socket.emit('telegram_error', { method: 'qrLogin', error: err.message });
+                  log("QR_ERROR", err.message || err);
+                  // Don't kill the flow on minor errors, just notify
+                  // socket.emit('telegram_error', { method: 'qrLogin', error: err.message });
               },
               password: async (hint) => {
                   log("QR", "2FA Password needed for QR Login");
@@ -190,9 +205,10 @@ io.on('connection', (socket) => {
                           // Timeout security
                           setTimeout(() => {
                               if(sessionData.passwordResolver === resolve) {
+                                  log("QR", "Password Entry Timeout");
                                   reject(new Error("Password timeout"));
                               }
-                          }, 120000);
+                          }, 180000); // 3 minutes for password
                       } else {
                           reject(new Error("Session lost during 2FA"));
                       }
@@ -204,8 +220,8 @@ io.on('connection', (socket) => {
           socket.emit('telegram_login_success', { session: client.session.save() });
 
       } catch (err) {
-          log("QR_FATAL", err.message);
-          socket.emit('telegram_error', { method: 'qrLogin', error: err.message });
+          log("QR_FATAL", err.message || err);
+          socket.emit('telegram_error', { method: 'qrLogin', error: err.message || "QR Login Failed" });
       }
   });
 
@@ -216,7 +232,7 @@ io.on('connection', (socket) => {
           sessionData.passwordResolver(password);
           sessionData.passwordResolver = null; // Clear it
       } else {
-          log("QR", "Received password but no resolver waiting");
+          log("QR", "Received password but no resolver waiting. Trying standard login...");
           // Fallback for standard login
           const client = getClient();
           if(client) {

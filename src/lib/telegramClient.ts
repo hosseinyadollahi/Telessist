@@ -108,27 +108,36 @@ const createProxyClient = (userCtx: any) => {
             
             // Return a promise that resolves when login is successful (or needs pass)
             return new Promise((resolve, reject) => {
-                socket.once('telegram_login_success', (res: any) => {
+                const onSuccess = (res: any) => {
                     if (res.session) {
                         try { localStorage.setItem("telegram_session", res.session); } catch(e){}
                     }
-                    socket.off('telegram_qr_generated');
-                    socket.off('telegram_password_needed');
+                    cleanup();
                     resolve(res);
-                });
-                
-                socket.once('telegram_error', (err: any) => {
+                };
+
+                const onError = (err: any) => {
                     if(err.method === 'qrLogin') {
-                        socket.off('telegram_qr_generated');
-                        socket.off('telegram_password_needed');
+                        cleanup();
                         reject(new Error(err.error));
                     }
-                });
+                };
 
-                socket.once('telegram_password_needed', (hint: any) => {
-                     // We resolve with a special flag indicating password is needed
-                     resolve({ passwordNeeded: true, hint });
-                });
+                const onPassword = (hint: any) => {
+                    // Do NOT cleanup here, we need to wait for password sending
+                    resolve({ passwordNeeded: true, hint });
+                };
+
+                const cleanup = () => {
+                    socket.off('telegram_qr_generated');
+                    socket.off('telegram_login_success', onSuccess);
+                    socket.off('telegram_error', onError);
+                    socket.off('telegram_password_needed', onPassword);
+                };
+
+                socket.on('telegram_login_success', onSuccess);
+                socket.on('telegram_error', onError);
+                socket.on('telegram_password_needed', onPassword);
             });
         },
 
