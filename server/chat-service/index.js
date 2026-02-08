@@ -65,6 +65,9 @@ io.on('connection', (socket) => {
 
           // Hook into logging to see what's happening
           client.setLogLevel("info");
+          
+          // Double check session address before connect
+          console.log(`[${socket.id}] Target Server: ${client.session.serverAddress}:${client.session.port} (DC ${client.session.dcId})`);
 
           await client.connect();
           clients.set(socket.id, client);

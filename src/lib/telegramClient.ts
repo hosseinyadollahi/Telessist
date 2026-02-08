@@ -42,7 +42,7 @@ export const initClient = async (apiId: number, apiHash: string) => {
     socket.emit('telegram_init', { apiId, apiHash, session: sessionStr });
     
     // Wait for success
-    const res: any = await waitForEvent('telegram_init_success');
+    const res: any = await waitForEvent('telegram_init_success', 'telegram_error', 60000);
     
     // Update session if changed
     if (res.session && res.session !== sessionStr) {
@@ -71,8 +71,8 @@ const createProxyClient = (userCtx: any) => {
 
         sendCode: async (params: any, phone: string) => {
             socket.emit('telegram_send_code', { phone });
-            // Increase timeout to 90s for DC migrations
-            return await waitForEvent('telegram_send_code_success', 'telegram_error', 90000);
+            // Increase timeout to 120s for DC migrations (Production fix)
+            return await waitForEvent('telegram_send_code_success', 'telegram_error', 120000);
         },
 
         signIn: async (params: any) => {
