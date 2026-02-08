@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Menu, Search, Phone, MoreVertical, Paperclip, Mic, Send, Smile, ArrowLeft, Users } from 'lucide-react';
 import { io } from 'socket.io-client';
+import Login from './components/Login';
 
 // Types
 interface Message {
@@ -20,6 +21,12 @@ interface ChatPreview {
   online: boolean;
 }
 
+interface User {
+  id: number;
+  phone: string;
+  avatar: string;
+}
+
 // Mock Data
 const MOCK_CHATS: ChatPreview[] = [
   { id: 1, name: 'Saved Messages', avatar: 'https://ui-avatars.com/api/?name=SM&background=3b82f6&color=fff', lastMessage: 'Image.jpg', time: '12:30', unread: 0, online: true },
@@ -36,22 +43,48 @@ const MOCK_MESSAGES: Message[] = [
 ];
 
 export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [activeChat, setActiveChat] = useState<ChatPreview | null>(null);
   const [messages, setMessages] = useState<Message[]>(MOCK_MESSAGES);
   const [inputValue, setInputValue] = useState('');
   const [socket, setSocket] = useState<any>(null);
 
   useEffect(() => {
-    // Initialize Socket.io connection (point to the Nginx proxy path in prod, or direct in dev)
-    // For this demo environment, we just log. In real prod: const newSocket = io('/api/chat');
-    console.log('Connecting to socket service...');
-    // const newSocket = io('http://localhost:3002'); 
-    // setSocket(newSocket);
+    // Check local storage for token
+    const token = localStorage.getItem('token');
+    const userStr = localStorage.getItem('user');
+    if (token && userStr) {
+      setIsAuthenticated(true);
+      setCurrentUser(JSON.parse(userStr));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    // Initialize Socket.io connection
+    const SOCKET_URL = (import.meta as any).env.PROD ? '/' : 'http://localhost:3002';
+    const newSocket = io(SOCKET_URL); 
+    setSocket(newSocket);
     
     return () => {
-      // newSocket.close();
+       newSocket.close();
     };
-  }, []);
+  }, [isAuthenticated]);
+
+  const handleLoginSuccess = (token: string, user: any) => {
+    setIsAuthenticated(true);
+    setCurrentUser(user);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setIsAuthenticated(false);
+    setCurrentUser(null);
+    setActiveChat(null);
+  };
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,17 +100,25 @@ export default function App() {
     setMessages([...messages, newMessage]);
     setInputValue('');
     
-    // if (socket) socket.emit('send_message', { chatId: activeChat?.id, text: inputValue });
+    // In real app: socket.emit('send_message', { chatId: activeChat?.id, text: inputValue, userId: currentUser?.id });
   };
 
+  if (!isAuthenticated) {
+    return <Login onLoginSuccess={handleLoginSuccess} />;
+  }
+
   return (
-    <div className="flex h-screen w-full bg-[#0f172a] text-white overflow-hidden">
+    <div className="flex h-screen w-full bg-[#0f172a] text-white overflow-hidden font-sans">
       
       {/* Sidebar - Contacts List */}
       <div className={`w-full md:w-[400px] border-r border-slate-700 flex flex-col bg-[#1e293b] ${activeChat ? 'hidden md:flex' : 'flex'}`}>
         {/* Header */}
         <div className="p-3 flex items-center gap-3 bg-[#1e293b]">
-          <button className="p-2 hover:bg-slate-700 rounded-full text-slate-400">
+          <button 
+            onClick={handleLogout}
+            className="p-2 hover:bg-slate-700 rounded-full text-slate-400"
+            title="Menu (Click to Logout)"
+          >
             <Menu size={24} />
           </button>
           <div className="relative flex-1">
@@ -198,9 +239,11 @@ export default function App() {
           </>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-slate-500 bg-[#0f172a]">
-            <div className="bg-[#1e293b] p-6 rounded-full mb-4">
+            <div className="bg-[#1e293b] p-6 rounded-full mb-4 relative">
                <Users size={48} />
+               <div className="absolute -top-2 -right-2 bg-green-500 w-4 h-4 rounded-full border-2 border-[#1e293b]"></div>
             </div>
+            <h2 className="text-lg font-semibold text-white mb-2">Welcome {currentUser?.phone}</h2>
             <p className="text-sm bg-[#1e293b] px-4 py-1 rounded-full">Select a chat to start messaging</p>
           </div>
         )}

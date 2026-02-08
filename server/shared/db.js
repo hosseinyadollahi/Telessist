@@ -13,6 +13,30 @@ pool.on('error', (err) => {
   process.exit(-1);
 });
 
+// Initialize Tables
+const initDB = async () => {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        phone VARCHAR(20) UNIQUE NOT NULL,
+        username VARCHAR(50),
+        avatar VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    console.log('Database tables initialized');
+  } catch (err) {
+    console.error('Error initializing database', err);
+  } finally {
+    client.release();
+  }
+};
+
+initDB();
+
 export const query = (text, params) => pool.query(text, params);
 
 export default pool;
