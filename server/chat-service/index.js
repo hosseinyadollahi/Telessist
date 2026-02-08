@@ -38,19 +38,25 @@ io.on('connection', (socket) => {
           let stringSession = new StringSession(session || "");
           
           // --- FIX: SANITIZE SESSION ADDRESS ---
-          // Browser sessions might contain proxy URLs (like telessist.omniday.io).
+          // Browser sessions might contain proxy URLs.
           // We are in Node.js, we must connect directly to Telegram IPs.
-          // Since serverAddress is read-only (getter), we must create a new session if it's bad.
           if (stringSession.serverAddress && stringSession.serverAddress.includes('omniday')) {
-              console.warn(`[${socket.id}] ⚠️ Sanitizing session: Discarding proxy address '${stringSession.serverAddress}' and starting fresh.`);
-              stringSession = new StringSession(""); // Reset to empty to force direct connection
+              console.warn(`[${socket.id}] ⚠️ Sanitizing session: Discarding proxy address and starting fresh.`);
+              stringSession = new StringSession(""); 
+          }
+          
+          // --- FORCE DC CONFIGURATION ---
+          // If it's a new session (or reset), force connection to DC 2 (Production) on Port 443
+          if (!stringSession.serverAddress) {
+               console.log(`[${socket.id}] ⚙️  Forcing connection to DC 2 (149.154.167.50:443)...`);
+               stringSession.setDC(2, "149.154.167.50", 443);
           }
           // -------------------------------------
           
           console.log(`[${socket.id}] Creating backend Telegram Client...`);
           const client = new TelegramClient(stringSession, Number(apiId), apiHash, {
               connectionRetries: 5,
-              useWSS: true, // CHANGED: Use WSS (Port 443) for better firewall penetration and stability
+              useWSS: true, // Use SSL/TLS port 443 behavior
               deviceModel: "Telegram Web Server",
               systemVersion: "Linux",
               appVersion: "1.0.0",
