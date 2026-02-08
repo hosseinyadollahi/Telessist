@@ -20,6 +20,15 @@ const io = new Server(httpServer, {
   cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
+// --- HELPER FOR JSON LOGGING WITH BIGINT ---
+const jsonReplacer = (key, value) => {
+    if (typeof value === 'bigint') return value.toString(); // Convert BigInt to string
+    if (key === 'session') return '***HIDDEN***';
+    if (key === 'bytes') return '[Buffer]';
+    if (key === 'token') return '***QR_TOKEN***';
+    return value;
+};
+
 // --- CUSTOM LOGGER ---
 const log = (tag, message, data = null) => {
     const time = new Date().toISOString().split('T')[1].split('.')[0];
@@ -27,13 +36,11 @@ const log = (tag, message, data = null) => {
     const reset = "\x1b[0m";
     console.log(`${color}[${time}] [${tag}]${reset} ${message}`);
     if (data) {
-        console.log(JSON.stringify(data, (key, value) => {
-            if (key === 'session') return '***HIDDEN***';
-            if (key === 'phoneCodeHash') return value;
-            if (key === 'bytes') return '[Buffer]';
-            if (key === 'token') return '***QR_TOKEN***';
-            return value;
-        }, 2));
+        try {
+            console.log(JSON.stringify(data, jsonReplacer, 2));
+        } catch (e) {
+            console.log("[LOG_ERROR] Could not stringify data:", e.message);
+        }
     }
 };
 
@@ -55,12 +62,14 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
         stringSession.setDC(2, "149.154.167.50", 443);
     }
     
+    // CHANGED: Use "Desktop" parameters to look like a real PC client
+    // This improves the delivery rate of login codes.
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
         connectionRetries: 5,
         useWSS: false, 
-        deviceModel: "Telegram Web Clone", 
+        deviceModel: "Desktop", // Changed from "Telegram Web Clone"
         systemVersion: "Windows 10",
-        appVersion: "1.0.0",           
+        appVersion: "4.16.2", // Mimic a recent version
         langCode: "en",
         systemLangCode: "en",
         timeout: 30, 
@@ -265,15 +274,27 @@ io.on('connection', (socket) => {
       log("AUTH", `Sending code to: ${phoneClean}`);
 
       try {
+          // Add explicit error handling for invalid sessions before call
+          if (!client.connected) {
+             log("AUTH", "Client disconnected. Reconnecting...");
+             await client.connect();
+          }
+
           const result = await client.sendCode({
               apiId: Number(client.apiId),
               apiHash: String(client.apiHash),
           }, phoneClean);
           
-          log("AUTH_RESULT", "Telegram Response:", result);
+          // LOG FULL RESPONSE with BigInt support
+          log("AUTH_RESULT", "Telegram Raw Response:", result);
+
+          // Check if response actually contains the hash
+          if (!result || !result.phoneCodeHash) {
+              throw new Error("Telegram did not return a phoneCodeHash. Response might be incomplete.");
+          }
 
           const type = result.type?.className || 'unknown';
-          const isApp = type.includes('App'); 
+          const isApp = type.includes('App'); // SentCodeTypeApp
           
           socket.emit('telegram_send_code_success', { 
               phoneCodeHash: result.phoneCodeHash,
