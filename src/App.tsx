@@ -1,106 +1,91 @@
 import React, { useState, useEffect } from 'react';
 import { Menu, Search, Phone, MoreVertical, Paperclip, Mic, Send, Smile, ArrowLeft, Users } from 'lucide-react';
-import { io } from 'socket.io-client';
 import Login from './components/Login';
+import { getClient, clearSession } from './lib/telegramClient';
+import { Api } from 'telegram';
+import { Buffer } from 'buffer';
 
-// Types
-interface Message {
-  id: number;
-  text: string;
-  sender: 'me' | 'other';
-  time: string;
+// Make Buffer available globally for GramJS
+if (typeof window !== 'undefined') {
+  window.Buffer = Buffer;
 }
-
-interface ChatPreview {
-  id: number;
-  name: string;
-  avatar: string;
-  lastMessage: string;
-  time: string;
-  unread: number;
-  online: boolean;
-}
-
-interface User {
-  id: number;
-  phone: string;
-  avatar: string;
-}
-
-// Mock Data
-const MOCK_CHATS: ChatPreview[] = [
-  { id: 1, name: 'Saved Messages', avatar: 'https://ui-avatars.com/api/?name=SM&background=3b82f6&color=fff', lastMessage: 'Image.jpg', time: '12:30', unread: 0, online: true },
-  { id: 2, name: 'Frontend Team', avatar: 'https://ui-avatars.com/api/?name=FT&background=10b981&color=fff', lastMessage: 'Deploying to production...', time: '11:45', unread: 3, online: true },
-  { id: 3, name: 'Alice Smith', avatar: 'https://ui-avatars.com/api/?name=AS&background=f59e0b&color=fff', lastMessage: 'Can we meet tomorrow?', time: 'Yesterday', unread: 0, online: false },
-  { id: 4, name: 'Project X Updates', avatar: 'https://ui-avatars.com/api/?name=PX&background=8b5cf6&color=fff', lastMessage: 'New milestones added.', time: 'Mon', unread: 12, online: true },
-];
-
-const MOCK_MESSAGES: Message[] = [
-  { id: 1, text: 'Hey there! How is the new server setup coming along?', sender: 'other', time: '10:00' },
-  { id: 2, text: 'It is going great. We are using a microservices architecture with Nginx and Postgres.', sender: 'me', time: '10:01' },
-  { id: 3, text: 'That sounds robust. Did you use the setup script?', sender: 'other', time: '10:02' },
-  { id: 4, text: 'Yes, it automated everything from Node installation to PM2 config.', sender: 'me', time: '10:05' },
-];
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [activeChat, setActiveChat] = useState<ChatPreview | null>(null);
-  const [messages, setMessages] = useState<Message[]>(MOCK_MESSAGES);
+  const [dialogs, setDialogs] = useState<any[]>([]);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [activeChatId, setActiveChatId] = useState<any>(null);
   const [inputValue, setInputValue] = useState('');
-  const [socket, setSocket] = useState<any>(null);
+  const [currentUser, setCurrentUser] = useState<any>(null);
 
   useEffect(() => {
-    // Check local storage for token
-    const token = localStorage.getItem('token');
-    const userStr = localStorage.getItem('user');
-    if (token && userStr) {
-      setIsAuthenticated(true);
-      setCurrentUser(JSON.parse(userStr));
-    }
+    const checkAuth = async () => {
+        // Since we don't have API ID/Hash stored until login, we can only check session string existence
+        // But to really check, we rely on the Login component passing success or initClient handling it.
+        const session = localStorage.getItem("telegram_session");
+        if(session) {
+             // In a real app, we should re-init client here with stored creds. 
+             // For this demo, we might force re-login if variable is lost on refresh 
+             // or we need to persist API ID/Hash.
+             // For safety, let's assume if we have a session string, we are "mostly" auth, 
+             // but we need the client instance.
+             // Best user flow: Login component handles the initial connection.
+        }
+    };
+    checkAuth();
   }, []);
 
-  useEffect(() => {
-    if (!isAuthenticated) return;
+  const fetchDialogs = async () => {
+      const client = getClient();
+      if(!client) return;
+      
+      const me = await client.getMe();
+      setCurrentUser(me);
 
-    // Initialize Socket.io connection
-    const SOCKET_URL = (import.meta as any).env.PROD ? '/' : 'http://localhost:3002';
-    const newSocket = io(SOCKET_URL); 
-    setSocket(newSocket);
-    
-    return () => {
-       newSocket.close();
-    };
-  }, [isAuthenticated]);
+      const dlgs = await client.getDialogs({ limit: 20 });
+      setDialogs(dlgs);
+  };
 
-  const handleLoginSuccess = (token: string, user: any) => {
+  const fetchMessages = async (chatId: any) => {
+      const client = getClient();
+      if(!client) return;
+      
+      const msgs = await client.getMessages(chatId, { limit: 50 });
+      // Reverse to show newest at bottom
+      setMessages(msgs.reverse());
+  };
+
+  const handleLoginSuccess = () => {
     setIsAuthenticated(true);
-    setCurrentUser(user);
+    fetchDialogs();
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    setIsAuthenticated(false);
-    setCurrentUser(null);
-    setActiveChat(null);
+  const handleLogout = async () => {
+      const client = getClient();
+      if(client) await client.disconnect();
+      clearSession();
+      setIsAuthenticated(false);
   };
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  const handleChatSelect = (chat: any) => {
+      setActiveChatId(chat.entity);
+      fetchMessages(chat.entity);
+  };
+
+  const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputValue.trim()) return;
+    if (!inputValue.trim() || !activeChatId) return;
 
-    const newMessage: Message = {
-      id: Date.now(),
-      text: inputValue,
-      sender: 'me',
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
+    const client = getClient();
+    if(!client) return;
 
-    setMessages([...messages, newMessage]);
-    setInputValue('');
-    
-    // In real app: socket.emit('send_message', { chatId: activeChat?.id, text: inputValue, userId: currentUser?.id });
+    try {
+        await client.sendMessage(activeChatId, { message: inputValue });
+        setInputValue('');
+        fetchMessages(activeChatId); // Refresh
+    } catch (e) {
+        console.error("Send error", e);
+    }
   };
 
   if (!isAuthenticated) {
@@ -111,7 +96,7 @@ export default function App() {
     <div className="flex h-screen w-full bg-[#0f172a] text-white overflow-hidden font-sans">
       
       {/* Sidebar - Contacts List */}
-      <div className={`w-full md:w-[400px] border-r border-slate-700 flex flex-col bg-[#1e293b] ${activeChat ? 'hidden md:flex' : 'flex'}`}>
+      <div className={`w-full md:w-[400px] border-r border-slate-700 flex flex-col bg-[#1e293b] ${activeChatId ? 'hidden md:flex' : 'flex'}`}>
         {/* Header */}
         <div className="p-3 flex items-center gap-3 bg-[#1e293b]">
           <button 
@@ -133,26 +118,30 @@ export default function App() {
 
         {/* Chat List */}
         <div className="flex-1 overflow-y-auto">
-          {MOCK_CHATS.map((chat) => (
+          {dialogs.map((dialog) => (
             <div 
-              key={chat.id} 
-              onClick={() => setActiveChat(chat)}
-              className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-[#2c374b] transition-colors ${activeChat?.id === chat.id ? 'bg-[#334155]' : ''}`}
+              key={dialog.id} 
+              onClick={() => handleChatSelect(dialog)}
+              className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-[#2c374b] transition-colors ${activeChatId === dialog.entity ? 'bg-[#334155]' : ''}`}
             >
-              <div className="relative">
-                <img src={chat.avatar} alt={chat.name} className="w-12 h-12 rounded-full bg-slate-800" />
-                {chat.online && <div className="absolute bottom-0 right-0 w-3 h-3 bg-green-500 rounded-full border-2 border-[#1e293b]"></div>}
+              <div className="relative shrink-0">
+                {/* Simplified Avatar Logic */}
+                <div className="w-12 h-12 rounded-full bg-slate-700 flex items-center justify-center text-lg font-bold">
+                    {dialog.title ? dialog.title[0] : '?'}
+                </div>
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex justify-between items-baseline mb-1">
-                  <h3 className="font-semibold text-sm truncate">{chat.name}</h3>
-                  <span className="text-xs text-slate-400">{chat.time}</span>
+                  <h3 className="font-semibold text-sm truncate">{dialog.title || 'Unknown'}</h3>
+                  <span className="text-xs text-slate-400">
+                    {dialog.date ? new Date(dialog.date * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}
+                  </span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <p className="text-slate-400 text-sm truncate pr-2">{chat.lastMessage}</p>
-                  {chat.unread > 0 && (
+                  <p className="text-slate-400 text-sm truncate pr-2">{dialog.message?.message || 'Media/Sticker'}</p>
+                  {dialog.unreadCount > 0 && (
                     <span className="bg-blue-500 text-white text-xs font-bold px-2 py-0.5 rounded-full min-w-[20px] text-center">
-                      {chat.unread}
+                      {dialog.unreadCount}
                     </span>
                   )}
                 </div>
@@ -163,18 +152,18 @@ export default function App() {
       </div>
 
       {/* Main Chat Area */}
-      <div className={`flex-1 flex flex-col bg-[#0f172a] ${!activeChat ? 'hidden md:flex' : 'flex'}`}>
-        {activeChat ? (
+      <div className={`flex-1 flex flex-col bg-[#0f172a] ${!activeChatId ? 'hidden md:flex' : 'flex'}`}>
+        {activeChatId ? (
           <>
             {/* Chat Header */}
             <div className="h-16 border-b border-slate-700 flex items-center justify-between px-4 bg-[#1e293b]">
               <div className="flex items-center gap-3">
-                <button className="md:hidden mr-1" onClick={() => setActiveChat(null)}>
+                <button className="md:hidden mr-1" onClick={() => setActiveChatId(null)}>
                   <ArrowLeft size={24} className="text-slate-400" />
                 </button>
                 <div className="flex flex-col">
-                  <span className="font-semibold text-sm">{activeChat.name}</span>
-                  <span className="text-xs text-slate-400">{activeChat.online ? 'online' : 'last seen recently'}</span>
+                  <span className="font-semibold text-sm">Chat</span>
+                  <span className="text-xs text-slate-400">Telegram Network</span>
                 </div>
               </div>
               <div className="flex items-center gap-4 text-slate-400">
@@ -186,23 +175,18 @@ export default function App() {
 
             {/* Messages Area */}
             <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-[#0f172a] bg-opacity-95" style={{backgroundImage: 'url("https://web.telegram.org/img/bg_0.png")', backgroundBlendMode: 'overlay'}}>
-               {/* Date Separator Example */}
-               <div className="flex justify-center my-4">
-                  <span className="bg-[#1e293b] text-slate-300 text-xs px-3 py-1 rounded-full opacity-70">Today</span>
-               </div>
-
               {messages.map((msg) => (
-                <div key={msg.id} className={`flex ${msg.sender === 'me' ? 'justify-end' : 'justify-start'}`}>
+                <div key={msg.id} className={`flex ${msg.out ? 'justify-end' : 'justify-start'}`}>
                   <div 
                     className={`max-w-[70%] md:max-w-[50%] p-2 rounded-lg relative group ${
-                      msg.sender === 'me' 
+                      msg.out
                         ? 'bg-blue-600 rounded-tr-none text-white' 
                         : 'bg-[#1e293b] rounded-tl-none text-white'
                     }`}
                   >
-                    <p className="text-sm leading-relaxed pb-2">{msg.text}</p>
-                    <span className={`text-[10px] absolute bottom-1 right-2 ${msg.sender === 'me' ? 'text-blue-200' : 'text-slate-400'}`}>
-                      {msg.time}
+                    <p className="text-sm leading-relaxed pb-2">{msg.message || '<Media Content>'}</p>
+                    <span className={`text-[10px] absolute bottom-1 right-2 ${msg.out ? 'text-blue-200' : 'text-slate-400'}`}>
+                       {new Date(msg.date * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                     </span>
                   </div>
                 </div>
@@ -243,7 +227,7 @@ export default function App() {
                <Users size={48} />
                <div className="absolute -top-2 -right-2 bg-green-500 w-4 h-4 rounded-full border-2 border-[#1e293b]"></div>
             </div>
-            <h2 className="text-lg font-semibold text-white mb-2">Welcome {currentUser?.phone}</h2>
+            <h2 className="text-lg font-semibold text-white mb-2">Welcome {currentUser?.firstName}</h2>
             <p className="text-sm bg-[#1e293b] px-4 py-1 rounded-full">Select a chat to start messaging</p>
           </div>
         )}
