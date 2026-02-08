@@ -62,11 +62,45 @@ io.on('connection', (socket) => {
 
   socket.on('telegram_init', async ({ apiId, apiHash, session }) => {
       try {
-          console.log(`[${socket.id}] Init Client...`);
+          // CRITICAL FIX: Idempotency Check
+          // If a client already exists for this socket, and the session matches, 
+          // DO NOT recreate the client. This prevents accidental session resets 
+          // caused by frontend re-renders or old code.
           if (clients.has(socket.id)) {
-              // Try to graceful disconnect, but ignore errors
-              try { await clients.get(socket.id).disconnect(); } catch(e){}
+              const existingClient = clients.get(socket.id);
+              const currentSession = existingClient.session.save();
+              
+              // If incoming session is same as current (or current is valid and incoming matches it)
+              if (existingClient.connected && currentSession === session) {
+                  console.log(`[${socket.id}] ♻️ Client already initialized with same session. Skipping re-init.`);
+                  
+                  // Just return the existing state
+                  const isAuth = await existingClient.isUserAuthorized();
+                  let me = null;
+                  if(isAuth) {
+                      const user = await existingClient.getMe();
+                      me = {
+                          id: user.id.toString(),
+                          username: user.username,
+                          firstName: user.firstName,
+                          phone: user.phone
+                      };
+                  }
+                  
+                  socket.emit('telegram_init_success', { 
+                      session: currentSession,
+                      isAuth,
+                      user: me
+                  });
+                  return; // EXIT HERE
+              }
+              
+              // If sessions differ, proceed to disconnect and recreate
+              console.log(`[${socket.id}] 🔄 Session changed. Re-initializing...`);
+              try { await existingClient.disconnect(); } catch(e){}
               clients.delete(socket.id);
+          } else {
+              console.log(`[${socket.id}] ✨ Init Client...`);
           }
 
           const client = await createTelegramClient(session, apiId, apiHash);
