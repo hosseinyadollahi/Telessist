@@ -7,7 +7,7 @@ import { Buffer } from 'buffer';
 
 // Make Buffer available globally for GramJS
 if (typeof window !== 'undefined') {
-  window.Buffer = Buffer;
+  (window as any).Buffer = Buffer;
 }
 
 export default function App() {

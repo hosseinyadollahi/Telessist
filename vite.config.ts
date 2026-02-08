@@ -12,13 +12,14 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      // Polyfill Buffer for GramJS
+      // Polyfill Buffer and util for GramJS
       buffer: 'buffer/',
+      util: 'util/',
     },
   },
   optimizeDeps: {
-    // Ensure these packages are pre-bundled to avoid commonjs/esm issues
-    include: ['telegram', 'buffer', 'big-integer', 'pako'],
+    // Ensure these packages are pre-bundled
+    include: ['telegram', 'buffer', 'util', 'big-integer', 'pako'],
     esbuildOptions: {
         define: {
             global: 'globalThis'

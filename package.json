@@ -26,7 +26,8 @@
     "morgan": "^1.10.0",
     "jsonwebtoken": "^9.0.2",
     "telegram": "^2.19.7",
-    "buffer": "^6.0.3"
+    "buffer": "^6.0.3",
+    "util": "^0.12.5"
   },
   "devDependencies": {
     "@types/react": "^18.2.37",
