@@ -1,14 +1,11 @@
 import { Buffer } from 'buffer';
+import process from 'process';
 
-// Assign Buffer to window before any other imports
+// Global Polyfills
 if (typeof window !== 'undefined') {
   (window as any).Buffer = Buffer;
-  // Minimal process polyfill for util library used by gramjs
-  (window as any).process = { 
-    env: { NODE_DEBUG: false },
-    version: '',
-    nextTick: (cb: any) => setTimeout(cb, 0)
-  };
+  (window as any).process = process;
+  (window as any).global = window;
 }
 
 import React from 'react';
