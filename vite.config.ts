@@ -15,7 +15,10 @@ export default defineConfig({
       util: 'util/',
       events: 'events',
       assert: 'assert',
-      process: 'process/browser', // Explicit alias for process
+      process: 'process/browser', 
+      
+      // Crypto Polyfill (Crucial for Telegram Auth)
+      crypto: 'crypto-browserify',
       
       // Map Node modules to Browserify equivalents
       path: 'path-browserify',
@@ -38,7 +41,8 @@ export default defineConfig({
         'stream-browserify',
         'path-browserify',
         'assert',
-        'process'
+        'process',
+        'crypto-browserify'
     ],
     esbuildOptions: {
         define: {
