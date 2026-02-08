@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, Lock, Settings, Smartphone, Key, AlertTriangle } from 'lucide-react';
+import { ArrowRight, Lock, Settings, Smartphone, Key, AlertTriangle, WifiOff } from 'lucide-react';
 import { initClient, saveSession } from '../lib/telegramClient';
 
 interface LoginProps {
@@ -21,6 +21,21 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const handleError = (err: any) => {
+      console.error("Login Error Handler:", err);
+      let msg = err.message || "Unknown error occurred";
+      
+      if (msg.includes("TIMEOUT") || msg.includes("retries")) {
+          msg = "Connection timed out. The Telegram proxy might be blocked. Please enable a VPN.";
+      } else if (msg.includes("SecurityError") || msg.includes("Mixed Content")) {
+          msg = "Browser Security Error: Cannot connect to insecure WebSocket. (Fixed in latest update)";
+      } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+          msg = "Network Error. Please check your internet connection.";
+      }
+      
+      setError(msg);
+  };
+
   const handleInitClient = async (e: React.FormEvent) => {
       e.preventDefault();
       if(!apiId || !apiHash) {
@@ -33,12 +48,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           await initClient(Number(apiId), apiHash);
           setStep('phone');
       } catch (err: any) {
-          console.error(err);
-          let msg = err.message || "Connection timeout";
-          if (msg.includes("TIMEOUT")) {
-              msg = "Connection timed out. Please check your internet or try using a VPN.";
-          }
-          setError(msg);
+          handleError(err);
       } finally {
           setIsLoading(false);
       }
@@ -64,12 +74,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       setPhoneCodeHash(phoneCodeHash);
       setStep('code');
     } catch (err: any) {
-      console.error(err);
-      let msg = err.message || "Failed to send code.";
-      if (msg.includes("TIMEOUT")) {
-          msg = "Connection timed out. Please check your internet or try using a VPN.";
-      }
-      setError(msg);
+      handleError(err);
     } finally {
       setIsLoading(false);
     }
@@ -240,8 +245,11 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         )}
 
         {error && (
-          <div className="mt-6 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm flex items-center justify-center gap-2 animate-pulse">
-            <AlertTriangle size={18} /> {error}
+          <div className="mt-6 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm flex items-center justify-center gap-2 animate-pulse text-center">
+             <div className="flex flex-col items-center gap-1">
+                <WifiOff size={24} className="mb-1 opacity-70"/>
+                <span>{error}</span>
+             </div>
           </div>
         )}
 
