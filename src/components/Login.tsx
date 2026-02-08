@@ -266,7 +266,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
                         <div className="bg-white/20 p-2 rounded-lg"><QrCode className="text-white" size={24} /></div>
                         <div className="text-left">
                             <div className="font-bold text-lg">Login with QR Code</div>
-                            <div className="text-xs text-blue-200">Scan from Settings > Devices</div>
+                            <div className="text-xs text-blue-200">Scan from Settings &gt; Devices</div>
                         </div>
                     </div>
                     <ArrowRight className="text-white/50 group-hover:text-white" />
