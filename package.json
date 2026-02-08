@@ -25,7 +25,7 @@
     "helmet": "^7.1.0",
     "morgan": "^1.10.0",
     "jsonwebtoken": "^9.0.2",
-    "telegram": "^2.26.10",
+    "telegram": "^2.26.17",
     "buffer": "^6.0.3",
     "util": "^0.12.5",
     "events": "^3.3.0",
