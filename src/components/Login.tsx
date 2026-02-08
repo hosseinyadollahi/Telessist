@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, Lock, Settings, Smartphone, Key, AlertTriangle, WifiOff, RefreshCw } from 'lucide-react';
+import { ArrowRight, Lock, Settings, Smartphone, Key, AlertTriangle, WifiOff, RefreshCw, Trash2 } from 'lucide-react';
 import { initClient, saveSession, clearSession } from '../lib/telegramClient';
 
 interface LoginProps {
@@ -9,7 +9,7 @@ interface LoginProps {
 export default function Login({ onLoginSuccess }: LoginProps) {
   const [step, setStep] = useState<'creds' | 'phone' | 'code' | 'password'>('creds');
   
-  // Default Creds (Empty by default, user must provide)
+  // Default Creds
   const [apiId, setApiId] = useState('');
   const [apiHash, setApiHash] = useState('');
   
@@ -25,11 +25,11 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       console.error("Login Error Handler:", err);
       let msg = err.message || "Unknown error occurred";
       
-      if (msg.includes("TIMEOUT") || msg.includes("retries")) {
-          msg = "Connection timed out. Please check if the server is blocked or try again.";
-      } else if (msg.includes("SecurityError") || msg.includes("Mixed Content")) {
+      if (msg.includes("TIMEOUT")) {
+          msg = "Connection timed out (120s). Try resetting the session or check your internet.";
+      } else if (msg.includes("SecurityError")) {
           msg = "Browser Security Error: Cannot connect to insecure WebSocket.";
-      } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+      } else if (msg.includes("Failed to fetch")) {
           msg = "Network Error. Please check your internet connection.";
       }
       
@@ -135,7 +135,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   }
 
   const handleResetSession = () => {
-      if(window.confirm("This will clear your local connection data and refresh. Are you sure?")) {
+      if(window.confirm("Are you sure you want to clear the session and start fresh? This is recommended if you have connection issues.")) {
           clearSession();
       }
   };
@@ -147,10 +147,11 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         {/* Reset Button */}
         <button 
             onClick={handleResetSession}
-            className="absolute top-4 right-4 p-2 text-slate-500 hover:text-red-400 transition-colors"
-            title="Reset Session Data"
+            className="absolute top-4 right-4 p-2 text-slate-500 hover:text-red-400 transition-colors flex items-center gap-1 text-xs"
+            title="Clear local session data"
         >
-            <RefreshCw size={18} />
+            <Trash2 size={16} />
+            <span className="hidden sm:inline">Reset Session</span>
         </button>
 
         <div className="mb-8 text-center">
@@ -264,6 +265,9 @@ export default function Login({ onLoginSuccess }: LoginProps) {
              <div className="flex flex-col items-center gap-1">
                 <WifiOff size={24} className="mb-1 opacity-70"/>
                 <span>{error}</span>
+                {error.includes("timed out") && (
+                    <button onClick={handleResetSession} className="underline font-bold mt-1">Click here to Reset Session</button>
+                )}
              </div>
           </div>
         )}
