@@ -35,7 +35,17 @@ io.on('connection', (socket) => {
       console.log(`[${socket.id}] Request: telegram_init`);
       try {
           // If session is empty string, pass empty string to StringSession
-          const stringSession = new StringSession(session || "");
+          let stringSession = new StringSession(session || "");
+          
+          // --- FIX: SANITIZE SESSION ADDRESS ---
+          // Browser sessions might contain proxy URLs (like telessist.omniday.io).
+          // We are in Node.js, we must connect directly to Telegram IPs.
+          // Since serverAddress is read-only (getter), we must create a new session if it's bad.
+          if (stringSession.serverAddress && stringSession.serverAddress.includes('omniday')) {
+              console.warn(`[${socket.id}] ⚠️ Sanitizing session: Discarding proxy address '${stringSession.serverAddress}' and starting fresh.`);
+              stringSession = new StringSession(""); // Reset to empty to force direct connection
+          }
+          // -------------------------------------
           
           console.log(`[${socket.id}] Creating backend Telegram Client (Finland)...`);
           const client = new TelegramClient(stringSession, Number(apiId), apiHash, {
@@ -45,16 +55,6 @@ io.on('connection', (socket) => {
               systemVersion: "Linux",
               appVersion: "1.0.0",
           });
-
-          // --- FIX: SANITIZE SESSION ADDRESS ---
-          // Browser sessions might contain proxy URLs (like telessist.omniday.io).
-          // We are in Node.js, we must connect directly to Telegram IPs.
-          if (client.session.serverAddress && client.session.serverAddress.includes('omniday')) {
-              console.warn(`[${socket.id}] ⚠️ Sanitizing session: Removing proxy address '${client.session.serverAddress}' to force direct connection.`);
-              client.session.serverAddress = undefined;
-              client.session.port = undefined; 
-          }
-          // -------------------------------------
 
           await client.connect();
           clients.set(socket.id, client);
@@ -84,7 +84,7 @@ io.on('connection', (socket) => {
           console.error(`[${socket.id}] Init Error:`, err);
           // Special handling for connection errors
           let errorMsg = err.message;
-          if (errorMsg.includes("Connection")) {
+          if (errorMsg && errorMsg.includes("Connection")) {
               errorMsg = "Connection to Telegram failed. Please check server internet or VPN.";
           }
           socket.emit('telegram_error', { method: 'init', error: errorMsg });
