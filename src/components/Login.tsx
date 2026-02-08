@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, Lock, Settings, Smartphone, Key, AlertTriangle, WifiOff, RefreshCw, Trash2 } from 'lucide-react';
+import { ArrowRight, Lock, Smartphone, Key, WifiOff, Trash2 } from 'lucide-react';
 import { initClient, saveSession, clearSession } from '../lib/telegramClient';
 
 interface LoginProps {
@@ -19,6 +19,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const [phoneCodeHash, setPhoneCodeHash] = useState('');
   
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState('Connecting...');
   const [error, setError] = useState('');
 
   const handleError = (err: any) => {
@@ -26,11 +27,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       let msg = err.message || "Unknown error occurred";
       
       if (msg.includes("TIMEOUT")) {
-          msg = "Connection timed out (120s). Try resetting the session or check your internet.";
-      } else if (msg.includes("SecurityError")) {
-          msg = "Browser Security Error: Cannot connect to insecure WebSocket.";
-      } else if (msg.includes("Failed to fetch")) {
-          msg = "Network Error. Please check your internet connection.";
+          msg = "Server is taking too long. This often happens during first login as we switch data centers. Please try clicking Next again.";
       }
       
       setError(msg);
@@ -43,6 +40,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           return;
       }
       setIsLoading(true);
+      setLoadingMsg("Initializing connection...");
       setError('');
       try {
           await initClient(Number(apiId), apiHash);
@@ -57,6 +55,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const handleSendCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setLoadingMsg("Sending code (Checking Data Center)...");
     setError('');
 
     try {
@@ -83,6 +82,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setLoadingMsg("Verifying code...");
     setError('');
 
     try {
@@ -115,6 +115,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const handlePassword = async (e: React.FormEvent) => {
       e.preventDefault();
       setIsLoading(true);
+      setLoadingMsg("Checking password...");
       try {
           const client = await initClient(Number(apiId), apiHash);
           if (!client) throw new Error("Client not initialized");
@@ -135,7 +136,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   }
 
   const handleResetSession = () => {
-      if(window.confirm("Are you sure you want to clear the session and start fresh? This is recommended if you have connection issues.")) {
+      if(window.confirm("Start fresh? This fixes most connection issues.")) {
           clearSession();
       }
   };
@@ -201,7 +202,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
                     </div>
                 </div>
                 <button type="submit" disabled={isLoading} className="w-full bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-bold py-3.5 rounded-xl flex justify-center items-center gap-2 transition-all shadow-lg shadow-blue-900/20 active:scale-[0.98]">
-                    {isLoading ? 'Connecting...' : 'Continue'} <ArrowRight size={18}/>
+                    {isLoading ? loadingMsg : (<span>Continue <ArrowRight size={18} className="inline ml-1"/></span>)}
                 </button>
             </form>
         )}
@@ -227,7 +228,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
               disabled={isLoading || !phone}
               className="w-full bg-blue-500 hover:bg-blue-400 text-white font-bold py-3.5 rounded-xl flex items-center justify-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isLoading ? 'Sending...' : 'Next'} <ArrowRight size={18} />
+              {isLoading ? loadingMsg : (<span>Next <ArrowRight size={18} className="inline ml-1"/></span>)}
             </button>
           </form>
         )}
@@ -265,8 +266,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
              <div className="flex flex-col items-center gap-1">
                 <WifiOff size={24} className="mb-1 opacity-70"/>
                 <span>{error}</span>
-                {error.includes("timed out") && (
-                    <button onClick={handleResetSession} className="underline font-bold mt-1">Click here to Reset Session</button>
+                {error.includes("taking too long") && (
+                    <button onClick={handleResetSession} className="underline font-bold mt-1 text-red-300 hover:text-white">Start Over</button>
                 )}
              </div>
           </div>

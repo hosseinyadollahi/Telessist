@@ -4,81 +4,71 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import helmet from 'helmet';
 import { TelegramClient } from "telegram";
-// FIX: Append /index.js to resolve the directory import error in Node ESM
 import { StringSession } from "telegram/sessions/index.js";
 import { Api } from 'telegram';
-import { RPCError } from 'telegram/errors/index.js';
 
 const app = express();
 const httpServer = createServer(app);
 const PORT = process.env.PORT || 3002;
 
 app.use(helmet());
-app.use(cors({
-    origin: "*", 
-    methods: ["GET", "POST"]
-}));
+app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
 app.use(express.json());
 
 const io = new Server(httpServer, {
-  cors: {
-    origin: "*", 
-    methods: ["GET", "POST"]
-  }
+  cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
 const clients = new Map();
 
+// Helper to create a client instance
+const createTelegramClient = async (sessionStr, apiId, apiHash) => {
+    let stringSession = new StringSession(sessionStr || "");
+    
+    // Force clean session if it contains proxy junk
+    if (stringSession.serverAddress && stringSession.serverAddress.includes('omniday')) {
+        stringSession = new StringSession("");
+    }
+
+    // Always prefer DC 2 IP if we are on DC 2 or if it's a fresh session (likely to be DC 2/4)
+    // If it's DC 2, we HARDCODE the IP/Port.
+    if (stringSession.dcId === 2) {
+        console.log("⚡ enforcing DC 2 IP: 149.154.167.50:443");
+        stringSession.setDC(2, "149.154.167.50", 443);
+    }
+
+    const client = new TelegramClient(stringSession, Number(apiId), apiHash, {
+        connectionRetries: 3,
+        useWSS: false, // Force TCP
+        deviceModel: "Telegram Web Server",
+        systemVersion: "Linux",
+        appVersion: "1.0.0",
+    });
+    
+    // Silence verbose logs unless debugging
+    client.setLogLevel("info");
+    
+    await client.connect();
+    return client;
+};
+
 io.on('connection', (socket) => {
-  console.log(`[SOCKET] New Client Connected: ${socket.id}`);
+  console.log(`[SOCKET] Connected: ${socket.id}`);
 
   socket.on('telegram_init', async ({ apiId, apiHash, session }) => {
-      console.log(`[${socket.id}] Request: telegram_init`);
       try {
-          // Parse the session
-          let stringSession = new StringSession(session || "");
-          
-          console.log(`[${socket.id}] Incoming Session -> DC: ${stringSession.dcId || 'New'}, Addr: ${stringSession.serverAddress || 'None'}`);
-
-          // --- 1. SANITIZE SESSION ---
-          if (stringSession.serverAddress && stringSession.serverAddress.includes('omniday')) {
-              console.warn(`[${socket.id}] ⚠️ Sanitizing session: Discarding proxy address.`);
-              stringSession = new StringSession(""); 
+          console.log(`[${socket.id}] Init Client...`);
+          // Close existing if any
+          if (clients.has(socket.id)) {
+              await clients.get(socket.id).disconnect();
+              clients.delete(socket.id);
           }
-          
-          // --- 2. FORCE SPECIFIC IP CONFIGURATION (User Request) ---
-          // IP: 149.154.167.50, Port: 443, DC: 2
-          // We enforce this if:
-          // a) It's a new session (serverAddress is empty)
-          // b) The session is already on DC 2 (we update IP to the preferred one)
-          if (!stringSession.serverAddress || stringSession.dcId === 2) {
-               console.log(`[${socket.id}] ⚡ Enforcing Direct Connection to DC 2: 149.154.167.50:443`);
-               stringSession.setDC(2, "149.154.167.50", 443);
-          } else {
-               console.log(`[${socket.id}] ℹ️ Session is on DC ${stringSession.dcId} (${stringSession.serverAddress}). Keeping existing DC.`);
-          }
-          // -------------------------------------
-          
-          console.log(`[${socket.id}] Creating backend Telegram Client...`);
-          const client = new TelegramClient(stringSession, Number(apiId), apiHash, {
-              connectionRetries: 5,
-              useWSS: false, // FORCE TCP (MTProto)
-              deviceModel: "Telegram Web Server",
-              systemVersion: "Linux",
-              appVersion: "1.0.0",
-          });
 
-          // Set log level to debug to see migration details in console
-          client.setLogLevel("info");
-          
-          console.log(`[${socket.id}] Connecting to: ${client.session.serverAddress}:${client.session.port} (DC ${client.session.dcId})`);
-
-          await client.connect();
+          const client = await createTelegramClient(session, apiId, apiHash);
           clients.set(socket.id, client);
-          
-          const currentSession = client.session.save();
+
+          // Prepare response
           const isAuth = await client.isUserAuthorized();
-          
           let me = null;
           if(isAuth) {
              const user = await client.getMe();
@@ -91,76 +81,90 @@ io.on('connection', (socket) => {
           }
 
           socket.emit('telegram_init_success', { 
-              session: currentSession,
-              isAuth: isAuth,
+              session: client.session.save(),
+              isAuth,
               user: me
           });
-          console.log(`[${socket.id}] Init Success. Auth: ${isAuth}`);
-
       } catch (err) {
-          console.error(`[${socket.id}] Init Error:`, err);
-          let errorMsg = err.message;
-          if (errorMsg && errorMsg.includes("Connection")) {
-              errorMsg = "Connection to Telegram failed. Please check server internet or VPN.";
-          }
-          socket.emit('telegram_error', { method: 'init', error: errorMsg });
+          console.error(`[${socket.id}] Init Error:`, err.message);
+          socket.emit('telegram_error', { method: 'init', error: err.message });
       }
   });
 
   socket.on('telegram_send_code', async ({ phone }) => {
-      console.log(`[${socket.id}] Request: send_code to ${phone}`);
-      const client = clients.get(socket.id);
-      if(!client) return;
+      console.log(`[${socket.id}] Sending code to ${phone}...`);
+      let client = clients.get(socket.id);
+      if(!client) return socket.emit('telegram_error', { error: "Client not initialized" });
+
       try {
           const { phoneCodeHash } = await client.sendCode({
               apiId: client.apiId,
               apiHash: client.apiHash,
           }, phone);
-          console.log(`[${socket.id}] Send Code Success. Hash: ${phoneCodeHash}`);
+          
           socket.emit('telegram_send_code_success', { phoneCodeHash });
       } catch (err) {
-          console.error(`[${socket.id}] Send Code Error:`, err);
-          
-          // --- MANUAL MIGRATION HANDLING ---
-          // If we get a migration error, it means the library is trying to move to another DC.
-          // GramJS usually handles this, but if it picks a blocked IP, we want to intervene.
-          // Note: client.sendCode usually catches this internally. If it Bubbles up here, it failed hard.
-          
+          console.error(`[${socket.id}] Send Code Error: ${err.message}`);
+
+          // --- SIMPLIFIED MIGRATION HANDLING ---
           if (err.errorMessage && err.errorMessage.startsWith('PHONE_MIGRATE_')) {
               const newDcId = Number(err.errorMessage.split('_')[2]);
-              console.log(`[${socket.id}] ⚠️ PHONE_MIGRATE detected to DC ${newDcId}. Forcing IP override...`);
-              
+              console.log(`[${socket.id}] ⚠️ Migration required to DC ${newDcId}`);
+
               if (newDcId === 2) {
-                   console.log(`[${socket.id}] ⚡ Switching to DC 2 with Forced IP: 149.154.167.50:443`);
-                   client.session.setDC(2, "149.154.167.50", 443);
-                   
-                   // Reconnect with new settings
-                   await client.disconnect();
-                   await client.connect();
-                   
-                   // Retry sending code
-                   try {
-                        const { phoneCodeHash } = await client.sendCode({
-                            apiId: client.apiId,
-                            apiHash: client.apiHash,
-                        }, phone);
-                        console.log(`[${socket.id}] Retry Send Code Success.`);
-                        socket.emit('telegram_send_code_success', { phoneCodeHash });
-                        return;
-                   } catch (retryErr) {
-                        console.error(`[${socket.id}] Retry Failed:`, retryErr);
-                        socket.emit('telegram_error', { method: 'sendCode', error: retryErr.message });
-                        return;
-                   }
+                  try {
+                      console.log(`[${socket.id}] 🔄 Re-creating client on DC 2 (149.154.167.50:443)...`);
+                      
+                      // 1. Save old API creds
+                      const apiId = client.apiId;
+                      const apiHash = client.apiHash;
+                      
+                      // 2. Kill old client
+                      await client.disconnect();
+                      clients.delete(socket.id);
+
+                      // 3. Create NEW session pointing to DC 2
+                      const newSession = new StringSession("");
+                      newSession.setDC(2, "149.154.167.50", 443);
+
+                      // 4. Create NEW client
+                      const newClient = new TelegramClient(newSession, apiId, apiHash, {
+                          connectionRetries: 3,
+                          useWSS: false,
+                          deviceModel: "Telegram Web Server", 
+                          appVersion: "1.0.0"
+                      });
+                      
+                      await newClient.connect();
+                      clients.set(socket.id, newClient);
+                      
+                      // 5. Retry Send Code
+                      console.log(`[${socket.id}] 🔄 Retrying sendCode on new DC...`);
+                      const { phoneCodeHash } = await newClient.sendCode({ apiId, apiHash }, phone);
+                      
+                      // 6. Update frontend with new session immediately
+                      socket.emit('telegram_init_success', { 
+                          session: newClient.session.save(), 
+                          isAuth: false, 
+                          user: null 
+                      });
+
+                      socket.emit('telegram_send_code_success', { phoneCodeHash });
+                      return; // Success!
+
+                  } catch (migrationErr) {
+                      console.error(`[${socket.id}] Migration Failed:`, migrationErr);
+                      socket.emit('telegram_error', { method: 'sendCode', error: `Migration failed: ${migrationErr.message}` });
+                      return;
+                  }
               }
           }
-
+          
           socket.emit('telegram_error', { method: 'sendCode', error: err.message });
       }
   });
 
   socket.on('telegram_login', async ({ phone, code, phoneCodeHash, password }) => {
-      console.log(`[${socket.id}] Request: login`);
       const client = clients.get(socket.id);
       if(!client) return;
       try {
@@ -169,24 +173,19 @@ io.on('connection', (socket) => {
               phoneCodeHash: phoneCodeHash,
               phoneCode: code
           }));
-          
-          const session = client.session.save();
-          socket.emit('telegram_login_success', { session });
+          socket.emit('telegram_login_success', { session: client.session.save() });
       } catch (err) {
-          console.error(`[${socket.id}] Login Error:`, err.message);
           if (err.message && err.message.includes("SESSION_PASSWORD_NEEDED")) {
               if (password) {
                   try {
                       await client.signIn({ password, phoneNumber: phone, phoneCodeHash, phoneCode: code });
-                       const session = client.session.save();
-                       socket.emit('telegram_login_success', { session });
-                       return;
+                      socket.emit('telegram_login_success', { session: client.session.save() });
                   } catch (pwErr) {
-                       socket.emit('telegram_error', { method: 'login_password', error: pwErr.message });
-                       return;
+                      socket.emit('telegram_error', { method: 'login_password', error: pwErr.message });
                   }
+              } else {
+                  socket.emit('telegram_password_needed');
               }
-              socket.emit('telegram_password_needed');
           } else {
               socket.emit('telegram_error', { method: 'login', error: err.message });
           }
@@ -204,13 +203,10 @@ io.on('connection', (socket) => {
              date: d.date,
              unreadCount: d.unreadCount,
              message: d.message ? { message: d.message.message, date: d.message.date } : null,
-             isGroup: d.isGroup,
-             isUser: d.isUser,
              entityId: d.entity ? d.entity.id.toString() : null
           }));
           socket.emit('telegram_dialogs_data', serialized);
       } catch (err) {
-          console.error(err);
           socket.emit('telegram_error', { method: 'getDialogs', error: err.message });
       }
   });
@@ -229,7 +225,6 @@ io.on('connection', (socket) => {
           }));
           socket.emit('telegram_messages_data', serialized);
       } catch (err) {
-          console.error(err);
           socket.emit('telegram_error', { method: 'getMessages', error: err.message });
       }
   });
@@ -246,17 +241,16 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-      console.log(`[SOCKET] Client Disconnected: ${socket.id}`);
-      const client = clients.get(socket.id);
-      if (client) {
-          client.disconnect();
+      console.log(`[SOCKET] Disconnected: ${socket.id}`);
+      if (clients.has(socket.id)) {
+          clients.get(socket.id).disconnect();
           clients.delete(socket.id);
       }
   });
 });
 
 app.get('/api/chat/status', (req, res) => {
-  res.json({ status: 'Chat Service (Telegram Proxy) is running', service: 'chat-service' });
+  res.json({ status: 'Chat Service Running', ip_config: 'DC2 -> 149.154.167.50:443' });
 });
 
 httpServer.listen(PORT, () => {
