@@ -1,13 +1,4 @@
-import { Buffer } from 'buffer';
-import process from 'process';
-
-// Global Polyfills
-if (typeof window !== 'undefined') {
-  (window as any).Buffer = Buffer;
-  (window as any).process = process;
-  (window as any).global = window;
-}
-
+import './polyfills'; // MUST be the first import
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';

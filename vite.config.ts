@@ -7,7 +7,6 @@ export default defineConfig({
   plugins: [react()],
   define: {
     "global": "window",
-    "process.env": {},
   },
   resolve: {
     alias: {
@@ -16,13 +15,14 @@ export default defineConfig({
       util: 'util/',
       events: 'events',
       assert: 'assert',
+      process: 'process/browser', // Explicit alias for process
       
       // Map Node modules to Browserify equivalents
       path: 'path-browserify',
       stream: 'stream-browserify',
       os: 'os-browserify',
       
-      // Mock modules that don't exist in browser to empty objects
+      // Mock modules that don't exist in browser
       fs: path.resolve(__dirname, 'src/lib/empty-polyfill.js'),
       net: path.resolve(__dirname, 'src/lib/empty-polyfill.js'),
       tls: path.resolve(__dirname, 'src/lib/empty-polyfill.js'),
@@ -30,7 +30,6 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    // Force Vite to bundle these, treating them as browser-compatible after aliasing
     include: [
         'telegram', 
         'buffer', 
@@ -39,8 +38,7 @@ export default defineConfig({
         'stream-browserify',
         'path-browserify',
         'assert',
-        'big-integer',
-        'pako'
+        'process'
     ],
     esbuildOptions: {
         define: {
@@ -50,7 +48,10 @@ export default defineConfig({
   },
   build: {
     commonjsOptions: {
-      transformMixedEsModules: true, // Important for GramJS
+      transformMixedEsModules: true,
+    },
+    rollupOptions: {
+        plugins: []
     }
   }
 })

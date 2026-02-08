@@ -2,13 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Menu, Search, Phone, MoreVertical, Paperclip, Mic, Send, Smile, ArrowLeft, Users } from 'lucide-react';
 import Login from './components/Login';
 import { getClient, clearSession } from './lib/telegramClient';
-import { Api } from 'telegram';
-import { Buffer } from 'buffer';
-
-// Make Buffer available globally for GramJS
-if (typeof window !== 'undefined') {
-  (window as any).Buffer = Buffer;
-}
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -20,17 +13,8 @@ export default function App() {
 
   useEffect(() => {
     const checkAuth = async () => {
-        // Since we don't have API ID/Hash stored until login, we can only check session string existence
-        // But to really check, we rely on the Login component passing success or initClient handling it.
         const session = localStorage.getItem("telegram_session");
-        if(session) {
-             // In a real app, we should re-init client here with stored creds. 
-             // For this demo, we might force re-login if variable is lost on refresh 
-             // or we need to persist API ID/Hash.
-             // For safety, let's assume if we have a session string, we are "mostly" auth, 
-             // but we need the client instance.
-             // Best user flow: Login component handles the initial connection.
-        }
+        // In a real app, we might validate session here
     };
     checkAuth();
   }, []);
@@ -39,20 +23,27 @@ export default function App() {
       const client = getClient();
       if(!client) return;
       
-      const me = await client.getMe();
-      setCurrentUser(me);
+      try {
+        const me = await client.getMe();
+        setCurrentUser(me);
 
-      const dlgs = await client.getDialogs({ limit: 20 });
-      setDialogs(dlgs);
+        const dlgs = await client.getDialogs({ limit: 20 });
+        setDialogs(dlgs);
+      } catch (e) {
+          console.error("Error fetching dialogs:", e);
+      }
   };
 
   const fetchMessages = async (chatId: any) => {
       const client = getClient();
       if(!client) return;
       
-      const msgs = await client.getMessages(chatId, { limit: 50 });
-      // Reverse to show newest at bottom
-      setMessages(msgs.reverse());
+      try {
+        const msgs = await client.getMessages(chatId, { limit: 50 });
+        setMessages(msgs.reverse());
+      } catch (e) {
+        console.error("Error fetching messages:", e);
+      }
   };
 
   const handleLoginSuccess = () => {
@@ -82,7 +73,7 @@ export default function App() {
     try {
         await client.sendMessage(activeChatId, { message: inputValue });
         setInputValue('');
-        fetchMessages(activeChatId); // Refresh
+        fetchMessages(activeChatId); 
     } catch (e) {
         console.error("Send error", e);
     }
@@ -125,7 +116,6 @@ export default function App() {
               className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-[#2c374b] transition-colors ${activeChatId === dialog.entity ? 'bg-[#334155]' : ''}`}
             >
               <div className="relative shrink-0">
-                {/* Simplified Avatar Logic */}
                 <div className="w-12 h-12 rounded-full bg-slate-700 flex items-center justify-center text-lg font-bold">
                     {dialog.title ? dialog.title[0] : '?'}
                 </div>
