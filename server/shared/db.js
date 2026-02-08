@@ -1,5 +1,6 @@
 import pg from 'pg';
 
+// Handle CommonJS/ESM interop for 'pg'
 const { Pool } = pg;
 
 // In production, this comes from process.env.DATABASE_URL

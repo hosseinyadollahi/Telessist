@@ -79,9 +79,9 @@ npm run build
 ## قدم ۵: تنظیمات نهایی پروژه
 قبل از اجرای سرویس‌ها، باید مشخصات دیتابیس را در فایل کانفیگ وارد کنید.
 
-1. فایل `deploy/ecosystem.config.js` را باز کنید:
+1. فایل `deploy/ecosystem.config.cjs` را باز کنید (دقت کنید پسوند فایل **cjs** است):
 ```bash
-nano deploy/ecosystem.config.js
+nano deploy/ecosystem.config.cjs
 ```
 
 2. مقدار `DATABASE_URL` را پیدا کنید و اگر در قدم ۳ رمز عبور یا نام کاربری دیگری انتخاب کردید، اینجا اصلاح کنید.
@@ -95,9 +95,9 @@ PM2 باعث می‌شود سرویس‌های شما همیشه روشن بما
 sudo npm install -g pm2
 ```
 
-2. اجرای سرویس‌ها:
+2. اجرای سرویس‌ها (با استفاده از فایل cjs):
 ```bash
-pm2 start deploy/ecosystem.config.js
+pm2 start deploy/ecosystem.config.cjs
 ```
 
 3. ذخیره وضعیت برای اجرا پس از ریستارت سرور:
