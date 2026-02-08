@@ -25,32 +25,28 @@ const clients = new Map();
 const createTelegramClient = async (sessionStr, apiId, apiHash) => {
     let stringSession = new StringSession(sessionStr || "");
     
-    // Clean weird session strings
+    // Clean weird session strings if any
     if (stringSession.serverAddress && stringSession.serverAddress.includes('omniday')) {
         stringSession = new StringSession("");
     }
 
-    // OPTIMIZATION: If session is empty, FORCE DC 2 (Europe/Global) by default.
-    // Most users (including +49 numbers) are on DC 2. This prevents the initial migration delay/error.
+    // Force DC 2 (Europe/Global) for empty sessions to reduce migration errors
     if (!sessionStr) {
         stringSession.setDC(2, "149.154.167.50", 443);
     }
-
-    // Always prefer DC 2 IP if we are on DC 2
     if (stringSession.dcId === 2) {
         stringSession.setDC(2, "149.154.167.50", 443);
     }
 
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
         connectionRetries: 5,
-        useWSS: false, // Force TCP
-        deviceModel: "Telegram Web Server",
+        useWSS: false, 
+        deviceModel: "Telegram Web Clone",
         systemVersion: "Linux",
         appVersion: "1.0.0",
-        timeout: 30, // Moderate timeout
+        timeout: 30, 
     });
     
-    // Suppress verbose logs unless error
     client.setLogLevel("error");
     
     await client.connect();
@@ -62,19 +58,18 @@ io.on('connection', (socket) => {
 
   socket.on('telegram_init', async ({ apiId, apiHash, session }) => {
       try {
-          // CRITICAL FIX: Idempotency Check
-          // If a client already exists for this socket, and the session matches, 
-          // DO NOT recreate the client. This prevents accidental session resets 
-          // caused by frontend re-renders or old code.
+          // --- IDEMPOTENCY FIX ---
+          // Prevent re-initialization if the client exists and matches the API ID.
+          // This stops the session from being reset mid-login (which causes PHONE_CODE_INVALID).
           if (clients.has(socket.id)) {
               const existingClient = clients.get(socket.id);
-              const currentSession = existingClient.session.save();
               
-              // If incoming session is same as current (or current is valid and incoming matches it)
-              if (existingClient.connected && currentSession === session) {
-                  console.log(`[${socket.id}] ♻️ Client already initialized with same session. Skipping re-init.`);
+              // If connected and API ID matches, reuse this client!
+              // We ignore session string mismatch here because the server might have 
+              // a fuller session string than the client during the initial handshake.
+              if (existingClient.connected && Number(existingClient.apiId) === Number(apiId)) {
+                  console.log(`[${socket.id}] ♻️ Client already active. Reusing existing connection.`);
                   
-                  // Just return the existing state
                   const isAuth = await existingClient.isUserAuthorized();
                   let me = null;
                   if(isAuth) {
@@ -87,20 +82,21 @@ io.on('connection', (socket) => {
                       };
                   }
                   
+                  // Return the CURRENT server session, not the one passed in
                   socket.emit('telegram_init_success', { 
-                      session: currentSession,
+                      session: existingClient.session.save(),
                       isAuth,
                       user: me
                   });
-                  return; // EXIT HERE
+                  return; 
               }
               
-              // If sessions differ, proceed to disconnect and recreate
-              console.log(`[${socket.id}] 🔄 Session changed. Re-initializing...`);
+              // If different API ID, we must disconnect old and create new
+              console.log(`[${socket.id}] 🔄 Config changed. Re-initializing...`);
               try { await existingClient.disconnect(); } catch(e){}
               clients.delete(socket.id);
           } else {
-              console.log(`[${socket.id}] ✨ Init Client...`);
+              console.log(`[${socket.id}] ✨ Creating new Telegram Client...`);
           }
 
           const client = await createTelegramClient(session, apiId, apiHash);
@@ -130,7 +126,6 @@ io.on('connection', (socket) => {
   });
 
   socket.on('telegram_send_code', async ({ phone }) => {
-      // Clean phone number
       const phoneClean = String(phone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
       console.log(`[${socket.id}] Sending code to ${phoneClean}...`);
 
@@ -138,8 +133,6 @@ io.on('connection', (socket) => {
       if(!client) return socket.emit('telegram_error', { error: "Client not initialized" });
 
       try {
-          // DIRECT CALL - NO TIMEOUT WRAPPER, NO AUTO-RETRY
-          // This prevents sending 2 codes and expiring the first one.
           const { phoneCodeHash } = await client.sendCode({
               apiId: Number(client.apiId),
               apiHash: String(client.apiHash),
@@ -150,22 +143,19 @@ io.on('connection', (socket) => {
       } catch (err) {
           console.error(`[${socket.id}] Send Code Error: ${err.message}`);
 
-          // Handle Migration Error Explicitly
+          // Auto-handle DC Migration
           if (err.errorMessage && err.errorMessage.startsWith('PHONE_MIGRATE_')) {
               const targetDC = Number(err.errorMessage.split('_')[2]);
-              console.log(`[${socket.id}] ⚠️ Account requires DC ${targetDC}. Switching...`);
+              console.log(`[${socket.id}] ⚠️ Migration required to DC ${targetDC}. Switching...`);
 
               try {
                   const apiId = Number(client.apiId);
                   const apiHash = String(client.apiHash);
                   
-                  // Disconnect old
                   await client.disconnect();
                   clients.delete(socket.id);
 
-                  // Create New Session on correct DC
                   const newSession = new StringSession("");
-                  // Map common IPs (Simplified)
                   let ip = "149.154.167.50"; // DC 2
                   if (targetDC === 1) ip = "149.154.175.53";
                   if (targetDC === 4) ip = "149.154.167.91";
@@ -176,17 +166,14 @@ io.on('connection', (socket) => {
                   const newClient = new TelegramClient(newSession, apiId, apiHash, {
                       connectionRetries: 5,
                       useWSS: false,
-                      deviceModel: "Telegram Web Server", 
-                      appVersion: "1.0.0"
+                      deviceModel: "Telegram Web Clone",
                   });
                   
                   newClient.setLogLevel("error");
                   await newClient.connect();
                   clients.set(socket.id, newClient);
-
-                  // Update frontend session but DO NOT RESEND CODE AUTOMATICALLY.
-                  // Resending automatically is what causes "PHONE_CODE_EXPIRED".
-                  // We ask the user to click "Next" again.
+                  
+                  // Tell frontend to retry user action manually (safer)
                   socket.emit('telegram_init_success', { 
                       session: newClient.session.save(), 
                       isAuth: false, 
@@ -195,13 +182,13 @@ io.on('connection', (socket) => {
                   
                   socket.emit('telegram_error', { 
                       method: 'sendCode', 
-                      error: "Connection optimized for your region. Please click 'Next' again." 
+                      error: "Optimized connection. Please click Next again." 
                   });
                   return;
 
               } catch (migErr) {
-                  console.error("Migration switch failed", migErr);
-                  socket.emit('telegram_error', { method: 'sendCode', error: "Could not switch data center." });
+                  console.error("Migration failed", migErr);
+                  socket.emit('telegram_error', { method: 'sendCode', error: "Migration failed." });
                   return;
               }
           }
@@ -212,48 +199,45 @@ io.on('connection', (socket) => {
 
   socket.on('telegram_login', async (payload) => {
       const client = clients.get(socket.id);
-      if(!client) return;
+      if(!client) {
+          console.error(`[${socket.id}] Login attempted without initialized client.`);
+          return socket.emit('telegram_error', { method: 'login', error: "Session lost. Please reload." });
+      }
       
       const { code, phoneCodeHash, password } = payload;
       const rawPhone = payload.phone || payload.phoneNumber;
       const phoneClean = String(rawPhone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
       
-      console.log(`[${socket.id}] Logging in with ${phoneClean}...`);
+      console.log(`[${socket.id}] Logging in ${phoneClean} with hash ${phoneCodeHash?.substring(0,5)}...`);
 
       try {
-          await client.invoke(new Api.auth.SignIn({
-              phoneNumber: phoneClean,
-              phoneCodeHash: String(phoneCodeHash),
-              phoneCode: String(code)
-          }));
-          
+          // Standard Login
+          if (code && phoneCodeHash) {
+             await client.invoke(new Api.auth.SignIn({
+                  phoneNumber: phoneClean,
+                  phoneCodeHash: String(phoneCodeHash),
+                  phoneCode: String(code)
+              }));
+          } 
+          // 2FA Password Login
+          else if (password) {
+              await client.signIn({ password: String(password) });
+          }
+
           socket.emit('telegram_login_success', { session: client.session.save() });
 
       } catch (err) {
           const msg = err.message || err.errorMessage || "Unknown Error";
+          console.error(`[${socket.id}] Login Error:`, msg);
           
           if (msg.includes("SESSION_PASSWORD_NEEDED")) {
-              // Try high level sign in specifically for password flow triggers
-               socket.emit('telegram_password_needed');
+               socket.emit('telegram_error', { method: 'login', error: "SESSION_PASSWORD_NEEDED" }); // Handle in frontend
           } else if (msg.includes("PHONE_CODE_EXPIRED")) {
-              socket.emit('telegram_error', { method: 'login', error: "The code expired. Please restart the login process." });
+              socket.emit('telegram_error', { method: 'login', error: "Code expired. Please restart." });
           } else {
-              console.error(`[${socket.id}] Login Error:`, err);
               socket.emit('telegram_error', { method: 'login', error: msg });
           }
       }
-  });
-
-  socket.on('telegram_login_password', async ({ password }) => {
-        const client = clients.get(socket.id);
-        if(!client) return;
-
-        try {
-            await client.signIn({ password: String(password) });
-            socket.emit('telegram_login_success', { session: client.session.save() });
-        } catch(err) {
-            socket.emit('telegram_error', { method: 'login_password', error: err.message || "Invalid Password" });
-        }
   });
 
   socket.on('telegram_get_dialogs', async () => {
@@ -271,7 +255,6 @@ io.on('connection', (socket) => {
           }));
           socket.emit('telegram_dialogs_data', serialized);
       } catch (err) {
-          // Ignore timeout errors in logs for getDialogs, they are just noise
           if (!err.message.includes('TIMEOUT')) {
              socket.emit('telegram_error', { method: 'getDialogs', error: err.message });
           }
@@ -312,9 +295,10 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
       console.log(`[SOCKET] Disconnected: ${socket.id}`);
       if (clients.has(socket.id)) {
-          // Fire and forget disconnect
           const client = clients.get(socket.id);
           clients.delete(socket.id);
+          // Wait a bit before killing connection in case of refresh? 
+          // No, socket id changes on refresh.
           client.disconnect().catch(() => {});
       }
   });
