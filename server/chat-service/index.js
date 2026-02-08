@@ -35,7 +35,7 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
         stringSession.setDC(2, "149.154.167.50", 443);
     }
 
-    const client = new TelegramClient(stringSession, Number(apiId), apiHash, {
+    const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
         connectionRetries: 3,
         useWSS: false, // Force TCP
         deviceModel: "Telegram Web Server",
@@ -93,11 +93,10 @@ io.on('connection', (socket) => {
 
       try {
           // Wrap sendCode in a timeout race. 
-          // If gramJS gets stuck migrating to port 80 (common issue), we catch it here.
           const sendCodePromise = client.sendCode({
-              apiId: client.apiId,
-              apiHash: client.apiHash,
-          }, phone);
+              apiId: Number(client.apiId),
+              apiHash: String(client.apiHash),
+          }, String(phone));
 
           // 15s timeout for backend operation
           const timeoutPromise = new Promise((_, reject) => 
@@ -111,7 +110,6 @@ io.on('connection', (socket) => {
       } catch (err) {
           console.error(`[${socket.id}] Send Code Error: ${err.message}`);
 
-          // Handle Stuck Migration (Timeout) OR Explicit Migration Error
           const isMigrationError = err.errorMessage && err.errorMessage.startsWith('PHONE_MIGRATE_');
           const isTimeout = err.message === "BACKEND_TIMEOUT" || err.message.includes("TIMEOUT");
 
@@ -129,9 +127,11 @@ io.on('connection', (socket) => {
                   try {
                       console.log(`[${socket.id}] 🔄 Re-creating client on DC 2 (149.154.167.50:443)...`);
                       
-                      const apiId = client.apiId;
-                      const apiHash = client.apiHash;
-                      
+                      // Explicitly cast to prevent CastError
+                      const apiId = Number(client.apiId);
+                      const apiHash = String(client.apiHash);
+                      const phoneStr = String(phone);
+
                       // Kill old client
                       await client.disconnect();
                       clients.delete(socket.id);
@@ -147,11 +147,13 @@ io.on('connection', (socket) => {
                           appVersion: "1.0.0"
                       });
                       
+                      // Double enforce DC settings on the instance
+                      newClient.session.setDC(2, "149.154.167.50", 443);
+
                       newClient.setLogLevel("info");
                       await newClient.connect();
                       clients.set(socket.id, newClient);
                       
-                      // Notify frontend of new session
                       socket.emit('telegram_init_success', { 
                           session: newClient.session.save(), 
                           isAuth: false, 
@@ -159,14 +161,19 @@ io.on('connection', (socket) => {
                       });
 
                       console.log(`[${socket.id}] 🔄 Retrying sendCode on new connection...`);
-                      const { phoneCodeHash } = await newClient.sendCode({ apiId, apiHash }, phone);
+                      
+                      // Strict casting for sendCode
+                      const { phoneCodeHash } = await newClient.sendCode(
+                          { apiId: apiId, apiHash: apiHash }, 
+                          phoneStr
+                      );
                       
                       socket.emit('telegram_send_code_success', { phoneCodeHash });
                       return; 
 
                   } catch (retryErr) {
                       console.error(`[${socket.id}] Retry Failed:`, retryErr);
-                      socket.emit('telegram_error', { method: 'sendCode', error: "Connection failed even after switching DC. Please check server internet." });
+                      socket.emit('telegram_error', { method: 'sendCode', error: "Connection failed after switching DC. Please check server internet." });
                       return;
                   }
               }
@@ -181,16 +188,21 @@ io.on('connection', (socket) => {
       if(!client) return;
       try {
           await client.invoke(new Api.auth.SignIn({
-              phoneNumber: phone,
-              phoneCodeHash: phoneCodeHash,
-              phoneCode: code
+              phoneNumber: String(phone),
+              phoneCodeHash: String(phoneCodeHash),
+              phoneCode: String(code)
           }));
           socket.emit('telegram_login_success', { session: client.session.save() });
       } catch (err) {
           if (err.message && err.message.includes("SESSION_PASSWORD_NEEDED")) {
               if (password) {
                   try {
-                      await client.signIn({ password, phoneNumber: phone, phoneCodeHash, phoneCode: code });
+                      await client.signIn({ 
+                          password: String(password), 
+                          phoneNumber: String(phone), 
+                          phoneCodeHash: String(phoneCodeHash), 
+                          phoneCode: String(code) 
+                        });
                       socket.emit('telegram_login_success', { session: client.session.save() });
                   } catch (pwErr) {
                       socket.emit('telegram_error', { method: 'login_password', error: pwErr.message });
