@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, Lock, Smartphone, Key, WifiOff, Trash2 } from 'lucide-react';
+import { ArrowRight, Lock, Smartphone, Key, WifiOff, Trash2, AlertTriangle, MessageSquare } from 'lucide-react';
 import { initClient, getClient, saveSession, clearSession } from '../lib/telegramClient';
 
 interface LoginProps {
@@ -17,6 +17,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [phoneCodeHash, setPhoneCodeHash] = useState('');
+  const [deliveryMethod, setDeliveryMethod] = useState<'sms' | 'app' | 'unknown'>('unknown');
   
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState('Connecting...');
@@ -64,13 +65,21 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
     try {
       const client = getClient(); 
-      const res = await client.sendCode(
+      const res: any = await client.sendCode(
         { apiId: Number(apiId), apiHash: apiHash },
         phone
       );
 
       if (res && res.phoneCodeHash) {
         setPhoneCodeHash(res.phoneCodeHash);
+        
+        // Check delivery method from server response
+        if (res.isCodeViaApp) {
+            setDeliveryMethod('app');
+        } else {
+            setDeliveryMethod('sms');
+        }
+
         setStep('code');
       } else {
         throw new Error("Failed to get validation hash from Telegram");
@@ -169,7 +178,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
            <p className="text-slate-400">
              {step === 'creds' && 'Enter API Credentials'}
              {step === 'phone' && 'Sign in to Telegram'}
-             {step === 'code' && `Enter the code sent to ${phone}`}
+             {step === 'code' && `Enter the code`}
              {step === 'password' && 'Two-Step Verification'}
            </p>
         </div>
@@ -239,6 +248,26 @@ export default function Login({ onLoginSuccess }: LoginProps) {
 
         {(step === 'code' || step === 'password') && (
           <form onSubmit={step === 'code' ? handleVerify : handlePassword} className="space-y-8">
+             {/* Delivery Warning */}
+             {step === 'code' && deliveryMethod === 'app' && (
+                 <div className="bg-yellow-500/20 border border-yellow-500/30 p-3 rounded-xl flex gap-3 items-start">
+                     <AlertTriangle className="text-yellow-400 shrink-0" size={20} />
+                     <div className="text-xs text-yellow-100">
+                         <strong>Check Telegram App!</strong> <br/>
+                         The code was sent to your logged-in Telegram devices, NOT via SMS.
+                     </div>
+                 </div>
+             )}
+             
+             {step === 'code' && deliveryMethod === 'sms' && (
+                 <div className="bg-green-500/20 border border-green-500/30 p-3 rounded-xl flex gap-3 items-center">
+                     <MessageSquare className="text-green-400 shrink-0" size={20} />
+                     <div className="text-xs text-green-100">
+                         Code sent via SMS to {phone}
+                     </div>
+                 </div>
+             )}
+
              <div>
                 <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4 block text-center">
                     {step === 'code' ? 'Verification Code' : 'Password'}
