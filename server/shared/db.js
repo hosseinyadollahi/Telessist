@@ -9,7 +9,7 @@ const pool = new Pool({
 });
 
 pool.on('error', (err) => {
-  console.error('Unexpected error on idle client', err);
+  console.error('[DB-FATAL] Unexpected error on idle client', err);
   process.exit(-1);
 });
 
@@ -27,9 +27,9 @@ const initDB = async () => {
         last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log('Database tables initialized');
+    console.log('[DB-INIT] Database tables initialized successfully');
   } catch (err) {
-    console.error('Error initializing database', err);
+    console.error('[DB-INIT-ERROR] Error initializing database', err);
   } finally {
     client.release();
   }
@@ -37,6 +37,30 @@ const initDB = async () => {
 
 initDB();
 
-export const query = (text, params) => pool.query(text, params);
+// Wrapper for query logging
+export const query = async (text, params) => {
+  const start = Date.now();
+  try {
+    const res = await pool.query(text, params);
+    const duration = Date.now() - start;
+    
+    // Log successful query
+    console.log(`[DB] QUERY executed in ${duration}ms`, {
+      text: text.replace(/\s+/g, ' ').trim(), // Remove excess whitespace for cleaner logs
+      rows: res.rowCount
+    });
+    
+    return res;
+  } catch (err) {
+    // Log error query
+    const duration = Date.now() - start;
+    console.error(`[DB] QUERY FAILED in ${duration}ms`, {
+      text,
+      params,
+      error: err.message
+    });
+    throw err;
+  }
+};
 
 export default pool;
