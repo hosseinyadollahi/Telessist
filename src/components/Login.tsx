@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, Lock, Settings } from 'lucide-react';
+import { ArrowRight, Lock, Settings, Smartphone, Key } from 'lucide-react';
 import { initClient, saveSession } from '../lib/telegramClient';
 
 interface LoginProps {
@@ -28,12 +28,13 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           return;
       }
       setIsLoading(true);
+      setError('');
       try {
           await initClient(Number(apiId), apiHash);
           setStep('phone');
-          setError('');
       } catch (err: any) {
-          setError("Failed to initialize: " + err.message);
+          console.error(err);
+          setError("Failed to initialize: " + (err.message || "Connection timeout"));
       } finally {
           setIsLoading(false);
       }
@@ -85,7 +86,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         saveSession();
         onLoginSuccess();
       } catch (err: any) {
-        if (err.message.includes("SESSION_PASSWORD_NEEDED")) {
+        if (err.message && err.message.includes("SESSION_PASSWORD_NEEDED")) {
             setStep('password');
         } else {
             throw err;
@@ -121,65 +122,73 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   }
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-white text-black dark:bg-[#0f172a] dark:text-white transition-colors font-sans">
-      <div className="w-full max-w-sm p-8 flex flex-col items-center">
+    <div className="flex flex-col items-center justify-center min-h-screen bg-[#0f172a] text-white font-sans p-4">
+      <div className="w-full max-w-md bg-[#1e293b] rounded-2xl shadow-2xl p-8 border border-slate-700">
         
         <div className="mb-8 text-center">
-           <div className="w-32 h-32 bg-blue-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg">
-              <svg viewBox="0 0 24 24" className="w-16 h-16 text-white fill-current">
+           <div className="w-24 h-24 bg-blue-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg shadow-blue-500/20">
+              <svg viewBox="0 0 24 24" className="w-12 h-12 text-white fill-current transform -rotate-12">
                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.48-.94-2.4-1.54-1.06-.7-.37-1.09.23-1.72.14-.15 2.54-2.32 2.59-2.52.01-.03.01-.15-.06-.21-.07-.06-.17-.04-.25-.02-.11.02-1.78 1.14-5.02 3.34-.48.33-.91.49-1.3.48-.42-.01-1.23-.24-1.83-.42-.73-.23-1.31-.35-1.26-.74.03-.2.3-.41.79-.63 3.1-1.34 5.17-2.23 6.23-2.66 2.95-1.23 3.57-1.44 3.97-1.44.09 0 .28.02.41.12.11.08.14.19.15.26.01.07.02.26.01.43z"/>
               </svg>
            </div>
-           <h1 className="text-2xl font-bold mb-2">Telegram Web</h1>
-           <p className="text-gray-500 text-sm">
-             {step === 'creds' && 'Enter API Credentials (my.telegram.org)'}
-             {step === 'phone' && 'Your Phone Number'}
-             {step === 'code' && `Code sent to ${phone}`}
-             {step === 'password' && 'Enter 2FA Password'}
+           <h1 className="text-3xl font-bold mb-2 tracking-tight">Telegram Web</h1>
+           <p className="text-slate-400">
+             {step === 'creds' && 'Enter API Credentials'}
+             {step === 'phone' && 'Sign in to Telegram'}
+             {step === 'code' && `Enter the code sent to ${phone}`}
+             {step === 'password' && 'Two-Step Verification'}
            </p>
         </div>
 
         {step === 'creds' && (
-            <form onSubmit={handleInitClient} className="w-full space-y-4">
-                <div className="bg-blue-50 dark:bg-slate-800 p-3 rounded text-xs text-slate-500 mb-4">
-                    NOTE: To connect to real Telegram, you need an API ID. Get it at <a href="https://my.telegram.org" target="_blank" className="text-blue-500 underline">my.telegram.org</a>.
+            <form onSubmit={handleInitClient} className="space-y-5">
+                <div className="bg-blue-900/30 border border-blue-500/30 p-4 rounded-xl text-xs text-blue-200 leading-relaxed">
+                    <strong>Developer Mode:</strong> Please provide your App ID and Hash from <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-blue-400 underline hover:text-blue-300">my.telegram.org</a> to connect.
                 </div>
                 <div>
-                    <label className="text-xs text-slate-500 block mb-1">API ID</label>
-                    <input 
-                        type="text" 
-                        value={apiId}
-                        onChange={(e) => setApiId(e.target.value)}
-                        className="w-full bg-transparent border border-gray-300 dark:border-slate-600 rounded-lg p-3 outline-none focus:border-blue-500"
-                        placeholder="123456"
-                    />
+                    <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 block ml-1">App API ID</label>
+                    <div className="relative">
+                        <Key size={18} className="absolute left-4 top-3.5 text-slate-500" />
+                        <input 
+                            type="text" 
+                            value={apiId}
+                            onChange={(e) => setApiId(e.target.value)}
+                            className="w-full bg-slate-800/50 border border-slate-600 rounded-xl py-3 pl-11 pr-4 outline-none focus:border-blue-500 focus:bg-slate-800 transition-all text-white placeholder-slate-600"
+                            placeholder="123456"
+                        />
+                    </div>
                 </div>
                 <div>
-                    <label className="text-xs text-slate-500 block mb-1">API Hash</label>
-                    <input 
-                        type="text" 
-                        value={apiHash}
-                        onChange={(e) => setApiHash(e.target.value)}
-                        className="w-full bg-transparent border border-gray-300 dark:border-slate-600 rounded-lg p-3 outline-none focus:border-blue-500"
-                        placeholder="abcdef..."
-                    />
+                    <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 block ml-1">App API Hash</label>
+                    <div className="relative">
+                        <Lock size={18} className="absolute left-4 top-3.5 text-slate-500" />
+                        <input 
+                            type="text" 
+                            value={apiHash}
+                            onChange={(e) => setApiHash(e.target.value)}
+                            className="w-full bg-slate-800/50 border border-slate-600 rounded-xl py-3 pl-11 pr-4 outline-none focus:border-blue-500 focus:bg-slate-800 transition-all text-white placeholder-slate-600"
+                            placeholder="e.g. 07ffb4f17c..."
+                        />
+                    </div>
                 </div>
-                <button type="submit" disabled={isLoading} className="w-full bg-blue-500 text-white font-semibold py-3 rounded-xl flex justify-center items-center gap-2">
-                    {isLoading ? 'Connecting...' : 'Continue'} <ArrowRight size={16}/>
+                <button type="submit" disabled={isLoading} className="w-full bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-bold py-3.5 rounded-xl flex justify-center items-center gap-2 transition-all shadow-lg shadow-blue-900/20 active:scale-[0.98]">
+                    {isLoading ? 'Connecting...' : 'Continue'} <ArrowRight size={18}/>
                 </button>
             </form>
         )}
 
         {step === 'phone' && (
-          <form onSubmit={handleSendCode} className="w-full space-y-6">
-            <div className="flex gap-3">
-                 <div className="flex-1 border border-gray-300 dark:border-slate-600 rounded-lg p-3 relative bg-transparent hover:border-blue-500 transition-colors">
+          <form onSubmit={handleSendCode} className="space-y-6">
+            <div>
+                 <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2 block ml-1">Phone Number</label>
+                 <div className="relative group">
+                    <Smartphone size={20} className="absolute left-4 top-3.5 text-slate-500 group-focus-within:text-blue-500 transition-colors" />
                     <input 
                       type="tel" 
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      className="w-full bg-transparent outline-none text-lg"
-                      placeholder="+1234567890"
+                      className="w-full bg-slate-800/50 border border-slate-600 rounded-xl py-3 pl-12 pr-4 outline-none focus:border-blue-500 focus:bg-slate-800 transition-all text-white text-lg tracking-wide placeholder-slate-600"
+                      placeholder="+1 234 567 8900"
                       autoFocus
                     />
                  </div>
@@ -187,7 +196,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
             <button 
               type="submit" 
               disabled={isLoading || !phone}
-              className="w-full bg-blue-500 text-white font-semibold py-4 rounded-xl flex items-center justify-center gap-2 hover:bg-blue-600 transition-colors disabled:opacity-50"
+              className="w-full bg-blue-500 hover:bg-blue-400 text-white font-bold py-3.5 rounded-xl flex items-center justify-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isLoading ? 'Sending...' : 'Next'} <ArrowRight size={18} />
             </button>
@@ -195,21 +204,27 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         )}
 
         {(step === 'code' || step === 'password') && (
-          <form onSubmit={step === 'code' ? handleVerify : handlePassword} className="w-full space-y-6">
-             <div className="flex justify-center">
-                <input 
-                  type={step === 'password' ? 'password' : 'text'}
-                  value={step === 'code' ? code : password}
-                  onChange={(e) => step === 'code' ? setCode(e.target.value) : setPassword(e.target.value)}
-                  className="w-full text-center text-2xl tracking-widest bg-transparent border-b-2 border-gray-300 focus:border-blue-500 outline-none pb-2"
-                  placeholder={step === 'code' ? "Code..." : "Password..."}
-                  autoFocus
-                />
+          <form onSubmit={step === 'code' ? handleVerify : handlePassword} className="space-y-8">
+             <div>
+                <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4 block text-center">
+                    {step === 'code' ? 'Verification Code' : 'Password'}
+                </label>
+                <div className="flex justify-center">
+                    <input 
+                    type={step === 'password' ? 'password' : 'text'}
+                    value={step === 'code' ? code : password}
+                    onChange={(e) => step === 'code' ? setCode(e.target.value) : setPassword(e.target.value)}
+                    className="w-full text-center text-4xl font-mono tracking-[0.5em] bg-transparent border-b-2 border-slate-600 focus:border-blue-500 outline-none pb-4 text-white transition-colors"
+                    placeholder={step === 'code' ? "•••••" : "••••••"}
+                    autoFocus
+                    maxLength={step === 'code' ? 5 : undefined}
+                    />
+                </div>
              </div>
              <button 
               type="submit" 
               disabled={isLoading}
-              className="w-full bg-blue-500 text-white font-semibold py-4 rounded-xl flex items-center justify-center gap-2 hover:bg-blue-600 transition-colors disabled:opacity-50"
+              className="w-full bg-blue-500 hover:bg-blue-400 text-white font-bold py-3.5 rounded-xl flex items-center justify-center gap-2 transition-all disabled:opacity-50"
             >
               {isLoading ? <Lock size={18} className="animate-spin" /> : (step === 'code' ? 'Verify' : 'Unlock')}
             </button>
@@ -217,11 +232,14 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         )}
 
         {error && (
-          <div className="mt-4 p-3 bg-red-100 text-red-600 rounded-lg text-sm text-center w-full break-words">
+          <div className="mt-6 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm text-center animate-pulse">
             {error}
           </div>
         )}
 
+      </div>
+      <div className="mt-8 text-slate-500 text-xs">
+          Telegram Web Clone • Secure Connection • 2024
       </div>
     </div>
   );
