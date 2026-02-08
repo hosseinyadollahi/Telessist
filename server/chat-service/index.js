@@ -46,6 +46,16 @@ io.on('connection', (socket) => {
               appVersion: "1.0.0",
           });
 
+          // --- FIX: SANITIZE SESSION ADDRESS ---
+          // Browser sessions might contain proxy URLs (like telessist.omniday.io).
+          // We are in Node.js, we must connect directly to Telegram IPs.
+          if (client.session.serverAddress && client.session.serverAddress.includes('omniday')) {
+              console.warn(`[${socket.id}] ⚠️ Sanitizing session: Removing proxy address '${client.session.serverAddress}' to force direct connection.`);
+              client.session.serverAddress = undefined;
+              client.session.port = undefined; 
+          }
+          // -------------------------------------
+
           await client.connect();
           clients.set(socket.id, client);
           
@@ -72,7 +82,12 @@ io.on('connection', (socket) => {
 
       } catch (err) {
           console.error(`[${socket.id}] Init Error:`, err);
-          socket.emit('telegram_error', { method: 'init', error: err.message });
+          // Special handling for connection errors
+          let errorMsg = err.message;
+          if (errorMsg.includes("Connection")) {
+              errorMsg = "Connection to Telegram failed. Please check server internet or VPN.";
+          }
+          socket.emit('telegram_error', { method: 'init', error: errorMsg });
       }
   });
 

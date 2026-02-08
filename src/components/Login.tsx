@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { ArrowRight, Lock, Settings, Smartphone, Key, AlertTriangle, WifiOff } from 'lucide-react';
-import { initClient, saveSession } from '../lib/telegramClient';
+import { ArrowRight, Lock, Settings, Smartphone, Key, AlertTriangle, WifiOff, RefreshCw } from 'lucide-react';
+import { initClient, saveSession, clearSession } from '../lib/telegramClient';
 
 interface LoginProps {
   onLoginSuccess: () => void;
@@ -26,9 +26,9 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       let msg = err.message || "Unknown error occurred";
       
       if (msg.includes("TIMEOUT") || msg.includes("retries")) {
-          msg = "Connection timed out. The Telegram proxy might be blocked. Please enable a VPN.";
+          msg = "Connection timed out. Please check if the server is blocked or try again.";
       } else if (msg.includes("SecurityError") || msg.includes("Mixed Content")) {
-          msg = "Browser Security Error: Cannot connect to insecure WebSocket. (Fixed in latest update)";
+          msg = "Browser Security Error: Cannot connect to insecure WebSocket.";
       } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
           msg = "Network Error. Please check your internet connection.";
       }
@@ -134,10 +134,25 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       }
   }
 
+  const handleResetSession = () => {
+      if(window.confirm("This will clear your local connection data and refresh. Are you sure?")) {
+          clearSession();
+      }
+  };
+
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-[#0f172a] text-white font-sans p-4">
-      <div className="w-full max-w-md bg-[#1e293b] rounded-2xl shadow-2xl p-8 border border-slate-700">
+      <div className="w-full max-w-md bg-[#1e293b] rounded-2xl shadow-2xl p-8 border border-slate-700 relative">
         
+        {/* Reset Button */}
+        <button 
+            onClick={handleResetSession}
+            className="absolute top-4 right-4 p-2 text-slate-500 hover:text-red-400 transition-colors"
+            title="Reset Session Data"
+        >
+            <RefreshCw size={18} />
+        </button>
+
         <div className="mb-8 text-center">
            <div className="w-24 h-24 bg-blue-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg shadow-blue-500/20">
               <svg viewBox="0 0 24 24" className="w-12 h-12 text-white fill-current transform -rotate-12">
