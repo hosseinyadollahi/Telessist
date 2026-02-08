@@ -7,6 +7,8 @@ export default defineConfig({
   define: {
     // Polyfill global for GramJS
     "global": "window",
+    // Polyfill process for some node deps
+    "process.env": {},
   },
   resolve: {
     alias: {
@@ -14,4 +16,13 @@ export default defineConfig({
       buffer: 'buffer/',
     },
   },
+  optimizeDeps: {
+    // Ensure these packages are pre-bundled to avoid commonjs/esm issues
+    include: ['telegram', 'buffer', 'big-integer', 'pako'],
+    esbuildOptions: {
+        define: {
+            global: 'globalThis'
+        }
+    }
+  }
 })
