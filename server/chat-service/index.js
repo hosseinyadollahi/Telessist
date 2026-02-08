@@ -36,12 +36,14 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
     }
 
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
-        connectionRetries: 10, // Significantly increased retries
+        connectionRetries: 10,
         useWSS: false, // Force TCP
         deviceModel: "Telegram Web Server",
         systemVersion: "Linux",
         appVersion: "1.0.0",
-        timeout: 10, // Socket timeout
+        // CRITICAL: Increased socket timeout. 
+        // Default is often too low for DC migration handshakes on slower server connections.
+        timeout: 60, 
     });
     
     client.setLogLevel("info");
@@ -102,10 +104,9 @@ io.on('connection', (socket) => {
               apiHash: String(client.apiHash),
           }, phoneClean);
 
-          // INCREASED TIMEOUT to 60s. 
-          // GramJS migration can take 20-30s. Premature timeout causes double-send.
+          // INCREASED TIMEOUT to 75s. 
           const timeoutPromise = new Promise((_, reject) => 
-               setTimeout(() => reject(new Error("BACKEND_TIMEOUT")), 60000)
+               setTimeout(() => reject(new Error("BACKEND_TIMEOUT")), 75000)
           );
 
           const { phoneCodeHash } = await Promise.race([sendCodePromise, timeoutPromise]);
@@ -116,9 +117,9 @@ io.on('connection', (socket) => {
           console.error(`[${socket.id}] Send Code Error: ${err.message}`);
 
           const isMigrationError = err.errorMessage && err.errorMessage.startsWith('PHONE_MIGRATE_');
+          // Catch both manual timeout and GramJS internal timeout string
           const isTimeout = err.message === "BACKEND_TIMEOUT" || err.message.includes("TIMEOUT");
 
-          // Only force migration logic if it's a REAL error or a very long timeout
           if (isMigrationError || isTimeout) {
               
               let targetDC = 2; // Default fallback
@@ -126,7 +127,7 @@ io.on('connection', (socket) => {
                   targetDC = Number(err.errorMessage.split('_')[2]);
                   console.log(`[${socket.id}] ⚠️ Explicit Migration requested to DC ${targetDC}`);
               } else {
-                  console.log(`[${socket.id}] ⏳ Timeout detected (60s). Assuming stuck migration. Forcing switch to DC 2...`);
+                  console.log(`[${socket.id}] ⏳ Timeout detected. Assuming stuck migration. Forcing switch to DC 2...`);
               }
 
               if (targetDC === 2) {
@@ -148,7 +149,8 @@ io.on('connection', (socket) => {
                           connectionRetries: 10,
                           useWSS: false,
                           deviceModel: "Telegram Web Server", 
-                          appVersion: "1.0.0"
+                          appVersion: "1.0.0",
+                          timeout: 60, // IMPORTANT: Ensure timeout is high for the new client too
                       });
                       
                       // Double enforce DC settings on the instance
