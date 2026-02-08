@@ -36,7 +36,7 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
     }
 
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
-        connectionRetries: 3,
+        connectionRetries: 5, // Increased retries
         useWSS: false, // Force TCP
         deviceModel: "Telegram Web Server",
         systemVersion: "Linux",
@@ -142,7 +142,7 @@ io.on('connection', (socket) => {
                       newSession.setDC(2, "149.154.167.50", 443);
 
                       const newClient = new TelegramClient(newSession, apiId, apiHash, {
-                          connectionRetries: 3,
+                          connectionRetries: 5,
                           useWSS: false,
                           deviceModel: "Telegram Web Server", 
                           appVersion: "1.0.0"
@@ -188,28 +188,42 @@ io.on('connection', (socket) => {
       const client = clients.get(socket.id);
       if(!client) return;
       
+      // CRITICAL: Clean phone number to avoid PHONE_NUMBER_INVALID error
       const phoneClean = String(phone).replace(/\s+/g, '').replace(/[()]/g, '').trim();
+      console.log(`[${socket.id}] Logging in with ${phoneClean}...`);
 
       try {
-          // Use high-level signIn which handles format matching and 2FA gracefully
-          const params = {
+          // Fallback to low-level invoke because client.signIn seems missing/bugged in this context
+          await client.invoke(new Api.auth.SignIn({
               phoneNumber: phoneClean,
               phoneCodeHash: String(phoneCodeHash),
-              phoneCode: String(code),
-          };
+              phoneCode: String(code)
+          }));
           
-          if (password) {
-              params.password = String(password);
-          }
-
-          await client.signIn(params);
           socket.emit('telegram_login_success', { session: client.session.save() });
 
       } catch (err) {
           const msg = err.message || err.errorMessage || "Unknown Error";
           
           if (msg.includes("SESSION_PASSWORD_NEEDED")) {
-              socket.emit('telegram_password_needed');
+              if (password) {
+                  try {
+                      // Try high level sign in specifically for password, or checkPassword
+                      await client.signIn({ 
+                          password: String(password), 
+                          phoneNumber: phoneClean, 
+                          phoneCodeHash: String(phoneCodeHash), 
+                          phoneCode: String(code) 
+                      });
+                      socket.emit('telegram_login_success', { session: client.session.save() });
+                  } catch (pwErr) {
+                       // If high-level fails, try low-level password check (complex) or just report error
+                       console.error("Password Login Error:", pwErr);
+                       socket.emit('telegram_error', { method: 'login_password', error: pwErr.message });
+                  }
+              } else {
+                  socket.emit('telegram_password_needed');
+              }
           } else {
               console.error(`[${socket.id}] Login Error:`, err);
               socket.emit('telegram_error', { method: 'login', error: msg });
