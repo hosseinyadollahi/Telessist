@@ -4,7 +4,8 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import helmet from 'helmet';
 import { TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions";
+// FIX: Append /index.js to resolve the directory import error in Node ESM
+import { StringSession } from "telegram/sessions/index.js";
 import { Api } from 'telegram';
 
 const app = express();
@@ -13,14 +14,14 @@ const PORT = process.env.PORT || 3002;
 
 app.use(helmet());
 app.use(cors({
-    origin: "*", // Allow all in dev, restrict in prod
+    origin: "*", 
     methods: ["GET", "POST"]
 }));
 app.use(express.json());
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "*", // Crucial for allowing Vite frontend to connect
+    origin: "*", 
     methods: ["GET", "POST"]
   }
 });
