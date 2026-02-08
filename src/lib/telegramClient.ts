@@ -71,12 +71,14 @@ const createProxyClient = (userCtx: any) => {
 
         sendCode: async (params: any, phone: string) => {
             socket.emit('telegram_send_code', { phone });
-            return await waitForEvent('telegram_send_code_success');
+            // Increase timeout to 90s for DC migrations
+            return await waitForEvent('telegram_send_code_success', 'telegram_error', 90000);
         },
 
         signIn: async (params: any) => {
              socket.emit('telegram_login', params);
-             const res: any = await waitForEvent('telegram_login_success', 'telegram_error', 60000); // 60s timeout for waiting
+             // Login can also take time if password check is slow or network lags
+             const res: any = await waitForEvent('telegram_login_success', 'telegram_error', 60000);
              // Save session
              if (res.session) {
                  localStorage.setItem("telegram_session", res.session);

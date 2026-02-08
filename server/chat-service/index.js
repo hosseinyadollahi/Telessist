@@ -47,14 +47,17 @@ io.on('connection', (socket) => {
           }
           // -------------------------------------
           
-          console.log(`[${socket.id}] Creating backend Telegram Client (Finland)...`);
+          console.log(`[${socket.id}] Creating backend Telegram Client...`);
           const client = new TelegramClient(stringSession, Number(apiId), apiHash, {
               connectionRetries: 5,
-              useWSS: false, // Server-side: Use direct TCP
+              useWSS: true, // CHANGED: Use WSS (Port 443) for better firewall penetration and stability
               deviceModel: "Telegram Web Server",
               systemVersion: "Linux",
               appVersion: "1.0.0",
           });
+
+          // Hook into logging to see what's happening
+          client.setLogLevel("info");
 
           await client.connect();
           clients.set(socket.id, client);
@@ -100,6 +103,7 @@ io.on('connection', (socket) => {
               apiId: client.apiId,
               apiHash: client.apiHash,
           }, phone);
+          console.log(`[${socket.id}] Send Code Success. Hash: ${phoneCodeHash}`);
           socket.emit('telegram_send_code_success', { phoneCodeHash });
       } catch (err) {
           console.error(`[${socket.id}] Send Code Error:`, err);
