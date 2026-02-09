@@ -47,6 +47,10 @@ const activeSessions = new Map();
 // Map<socketId, deviceSessionId>
 const socketMap = new Map();
 
+// Track QR polling loops to cancel them if needed
+// Map<socketId, { active: boolean }>
+const qrLoops = new Map();
+
 const createTelegramClient = async (sessionStr, apiId, apiHash) => {
     log("CLIENT", `Creating client instance for API_ID: ${apiId}`);
     
@@ -145,8 +149,15 @@ io.on('connection', (socket) => {
       }
   });
 
-  // --- QR CODE LOGIN ---
+  // --- QR CODE LOGIN (MANUAL LOOP) ---
   socket.on('telegram_login_qr', async () => {
+      // Stop any existing QR loop for this socket
+      if (qrLoops.has(socket.id)) {
+          qrLoops.get(socket.id).active = false;
+      }
+      const loopState = { active: true };
+      qrLoops.set(socket.id, loopState);
+
       const currentClient = getClient();
       const deviceSessionId = socketMap.get(socket.id);
       
@@ -160,7 +171,7 @@ io.on('connection', (socket) => {
           return socket.emit('telegram_error', { error: "Missing API Credentials. Please refresh and try again." });
       }
 
-      log("QR", "Starting QR Login Sequence...");
+      log("QR", "Starting QR Login Sequence (Manual Mode)...");
 
       try {
           // Cleanup old client to prevent state conflicts
@@ -192,67 +203,89 @@ io.on('connection', (socket) => {
              activeSessions.set(deviceSessionId, { client, cleanup: null, passwordResolver: null });
              socketMap.set(socket.id, deviceSessionId);
           }
-          
-          const sessionData = deviceSessionId ? activeSessions.get(deviceSessionId) : null;
 
-          log("QR", "Client connected. Defining Callbacks...");
-          
-          const qrCodeCallback = async ({ token, expires }) => {
-              log("QR", "Token Received");
-              const tokenBase64 = token.toString('base64')
-                  .replace(/\+/g, '-')
-                  .replace(/\//g, '_')
-                  .replace(/=+$/, '');
-              
-              socket.emit('telegram_qr_generated', { 
-                  token: tokenBase64, 
-                  expires: expires 
-              });
-          };
+          log("QR", "Entering QR Polling Loop...");
 
-          const passwordCallback = async (hint) => {
-              log("QR", "2FA Password Needed");
-              socket.emit('telegram_password_needed', { hint });
-              return new Promise((resolve, reject) => {
-                  if (sessionData) {
-                      sessionData.passwordResolver = resolve;
-                      setTimeout(() => {
-                          if(sessionData.passwordResolver === resolve) {
-                              reject(new Error("Password timeout"));
-                          }
-                      }, 120000); 
-                  } else {
-                      reject(new Error("Session context lost"));
+          while (loopState.active && socket.connected) {
+              try {
+                  const result = await client.invoke(new Api.auth.ExportLoginToken({
+                      apiId: Number(apiId),
+                      apiHash: String(apiHash),
+                      exceptIds: []
+                  }));
+
+                  if (result instanceof Api.auth.LoginTokenSuccess) {
+                      log("QR", "✅ Login Token Success!");
+                      loopState.active = false;
+                      
+                      // Fetch user info just to be sure and helpful
+                      let me = null;
+                      try {
+                          const user = await client.getMe();
+                          me = { id: user.id.toString(), username: user.username, firstName: user.firstName };
+                      } catch(e) {}
+
+                      socket.emit('telegram_login_success', { 
+                          session: client.session.save(),
+                          user: me
+                      });
+                      break;
+
+                  } else if (result instanceof Api.auth.LoginToken) {
+                      // log("QR", "Got Login Token, waiting for scan...");
+                      const tokenBase64 = result.token.toString('base64')
+                          .replace(/\+/g, '-')
+                          .replace(/\//g, '_')
+                          .replace(/=+$/, '');
+                      
+                      socket.emit('telegram_qr_generated', { 
+                          token: tokenBase64, 
+                          expires: result.expires 
+                      });
+                      
+                      // Wait 2 seconds before polling again to avoid flooding
+                      await new Promise(resolve => setTimeout(resolve, 2000));
+
+                  } else if (result instanceof Api.auth.LoginTokenMigrateTo) {
+                      log("QR", `Migrating to DC ${result.dcId}...`);
+                      await client.switchDC(result.dcId);
+                      // Loop continues after migration
                   }
-              });
-          };
-
-          const errorCallback = (err) => {
-              log("QR_INTERNAL_ERROR", err.message || err);
-          };
-
-          // Wait a bit to ensure stability
-          await new Promise(r => setTimeout(r, 500));
-
-          log("QR", "Invoking signInUserWithQrCode...");
-          
-          const qrParams = {
-              apiId: Number(apiId),
-              apiHash: String(apiHash),
-              qrCode: qrCodeCallback,
-              password: passwordCallback,
-              onError: errorCallback
-          };
-
-          // Use bind to ensure context if necessary, though instance method should handle it
-          await client.signInUserWithQrCode(qrParams);
-
-          log("QR", "Login Successful!");
-          socket.emit('telegram_login_success', { session: client.session.save() });
+              } catch (loopErr) {
+                  if (loopErr.message && loopErr.message.includes('SESSION_PASSWORD_NEEDED')) {
+                      log("QR", "Password required (Unexpected in QR flow but handled)");
+                      socket.emit('telegram_password_needed', { hint: 'Password required' });
+                      loopState.active = false;
+                      // Setup resolver for password input
+                      const sessionData = activeSessions.get(deviceSessionId);
+                      if (sessionData) {
+                          sessionData.passwordResolver = async (pwd) => {
+                              try {
+                                  await client.signIn({ password: pwd });
+                                  socket.emit('telegram_login_success', { session: client.session.save() });
+                              } catch(e) {
+                                  socket.emit('telegram_error', { method: 'login', error: e.message });
+                              }
+                          };
+                      }
+                      break;
+                  } else {
+                      log("QR_LOOP_ERROR", loopErr.message);
+                      // Don't crash loop on minor network errors, but stop on critical ones
+                      if (loopErr.message.includes("AUTH_KEY")) {
+                          throw loopErr;
+                      }
+                      await new Promise(resolve => setTimeout(resolve, 2000));
+                  }
+              }
+          }
 
       } catch (err) {
           log("QR_FATAL", err.message || err);
           socket.emit('telegram_error', { method: 'qrLogin', error: err.message || "QR Login Failed" });
+          if(qrLoops.get(socket.id) === loopState) {
+              qrLoops.delete(socket.id);
+          }
       }
   });
 
@@ -361,6 +394,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+      // Stop QR loop
+      if (qrLoops.has(socket.id)) {
+          qrLoops.get(socket.id).active = false;
+          qrLoops.delete(socket.id);
+      }
+
       const sessionId = socketMap.get(socket.id);
       if (sessionId && activeSessions.has(sessionId)) {
           const sessionData = activeSessions.get(sessionId);
