@@ -99,15 +99,21 @@ const createProxyClient = (userCtx: any) => {
 
         // New: Start QR Login Flow
         startQrLogin: (onQrRecieved: (token: string) => void) => {
-            socket.emit('telegram_login_qr');
-            
-            socket.off('telegram_qr_generated'); // remove old listeners
+            // Remove old listeners to prevent duplicates
+            socket.off('telegram_qr_generated'); 
             socket.on('telegram_qr_generated', (data: any) => {
                 onQrRecieved(data.token);
             });
             
             // Return a promise that resolves when login is successful (or needs pass)
             return new Promise((resolve, reject) => {
+                const cleanup = () => {
+                    socket.off('telegram_qr_generated');
+                    socket.off('telegram_login_success', onSuccess);
+                    socket.off('telegram_error', onError);
+                    socket.off('telegram_password_needed', onPassword);
+                };
+
                 const onSuccess = (res: any) => {
                     if (res.session) {
                         try { localStorage.setItem("telegram_session", res.session); } catch(e){}
@@ -117,27 +123,26 @@ const createProxyClient = (userCtx: any) => {
                 };
 
                 const onError = (err: any) => {
-                    if(err.method === 'qrLogin') {
+                    if(err.method === 'qrLogin' || !err.method) {
                         cleanup();
                         reject(new Error(err.error));
                     }
                 };
 
                 const onPassword = (hint: any) => {
-                    // Do NOT cleanup here, we need to wait for password sending
+                    // CLEANUP IS REQUIRED HERE:
+                    // We are transitioning from "QR Phase" to "Password Phase".
+                    // The 'signIn' method will handle the rest (sending password and waiting for success).
+                    cleanup();
                     resolve({ passwordNeeded: true, hint });
-                };
-
-                const cleanup = () => {
-                    socket.off('telegram_qr_generated');
-                    socket.off('telegram_login_success', onSuccess);
-                    socket.off('telegram_error', onError);
-                    socket.off('telegram_password_needed', onPassword);
                 };
 
                 socket.on('telegram_login_success', onSuccess);
                 socket.on('telegram_error', onError);
                 socket.on('telegram_password_needed', onPassword);
+
+                // Emit AFTER listeners are attached to ensure we don't miss immediate events
+                socket.emit('telegram_login_qr');
             });
         },
 
