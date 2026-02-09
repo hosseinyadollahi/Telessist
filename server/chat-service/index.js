@@ -73,7 +73,7 @@ const createTelegramClient = async (sessionStr, apiId, apiHash, extraConfig = {}
         appVersion: "1.0.0", 
         langCode: "en",
         systemLangCode: "en-US",
-        timeout: 60, // Increased default timeout
+        timeout: 60, // Default timeout
         ...extraConfig
     });
     
@@ -261,21 +261,26 @@ io.on('connection', (socket) => {
                       const newIp = DC_IPS[newDcId];
                       log("QR", `⚠️ Account is on DC ${newDcId} (${newIp || 'Unknown IP'}). Performing full migration...`);
                       
-                      if (client.session && newIp) {
-                          // 1. Update session data
-                          client.session.setDC(newDcId, newIp, 443);
-                          const migratedSessionStr = client.session.save();
+                      if (newIp) {
+                          // 1. Create FRESH session for the new DC
+                          // We do NOT want to carry over the old Auth Key as it is invalid for the new DC.
+                          // Creating a new StringSession and setting DC forces a new handshake.
+                          const migrationSession = new StringSession("");
+                          migrationSession.setDC(newDcId, newIp, 443);
+                          const migrationSessionStr = migrationSession.save();
                           
                           // 2. Destroy old client completely
                           log("QR", "Destroying old client instance...");
                           try { await client.disconnect(); } catch(e) { log("QR", "Old client disconnect error (ignoring): " + e.message); }
+                          
+                          // Remove reference immediately
                           activeSessions.delete(deviceSessionId);
 
-                          // Wait for socket cleanup
-                          await new Promise(resolve => setTimeout(resolve, 2000));
+                          // Wait for socket/network cleanup
+                          await new Promise(resolve => setTimeout(resolve, 1000));
 
                           // 3. Create NEW Client with migrated session AND HIGHER TIMEOUT
-                          log("QR", `Creating NEW client for DC ${newDcId} with extended timeout...`);
+                          log("QR", `Creating NEW client for DC ${newDcId} with fresh session...`);
                           
                           // Retry loop for creating the new client
                           let retryCount = 0;
@@ -283,7 +288,8 @@ io.on('connection', (socket) => {
                           
                           while(retryCount < 3 && !connected) {
                               try {
-                                  client = await createTelegramClient(migratedSessionStr, apiId, apiHash, { timeout: 120 });
+                                  // This will generate a new Auth Key for the new DC
+                                  client = await createTelegramClient(migrationSessionStr, apiId, apiHash, { timeout: 120 });
                                   connected = true;
                               } catch(connErr) {
                                   retryCount++;
@@ -301,7 +307,6 @@ io.on('connection', (socket) => {
                       } else {
                           throw new Error(`Could not migrate to DC ${newDcId}. IP not found.`);
                       }
-                      // Loop continues and will call ExportLoginToken on the new client instance
                   }
               } catch (loopErr) {
                   if (loopErr.message && loopErr.message.includes('SESSION_PASSWORD_NEEDED')) {
