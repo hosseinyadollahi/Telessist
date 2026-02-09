@@ -191,7 +191,8 @@ io.on('connection', (socket) => {
 
           log("QR", "Creating Fresh Client for QR...");
           
-          const client = new TelegramClient(new StringSession(""), Number(apiId), String(apiHash), {
+          // Initial Client Creation
+          let client = new TelegramClient(new StringSession(""), Number(apiId), String(apiHash), {
               connectionRetries: 5,
               useWSS: false,
               deviceModel: "Telegram Web Clone",
@@ -227,7 +228,7 @@ io.on('connection', (socket) => {
                       log("QR", "✅ Login Token Success!");
                       loopState.active = false;
                       
-                      // Fetch user info just to be sure and helpful
+                      // Fetch user info
                       let me = null;
                       try {
                           const user = await client.getMe();
@@ -251,42 +252,69 @@ io.on('connection', (socket) => {
                           expires: result.expires 
                       });
                       
-                      // Wait 2 seconds before polling again to avoid flooding
+                      // Wait 2 seconds before polling again
                       await new Promise(resolve => setTimeout(resolve, 2000));
 
                   } else if (result instanceof Api.auth.LoginTokenMigrateTo) {
                       const newDcId = result.dcId;
                       const newIp = DC_IPS[newDcId];
-                      log("QR", `⚠️ Account is on DC ${newDcId} (${newIp || 'Unknown IP'}). Migrating...`);
+                      log("QR", `⚠️ Account is on DC ${newDcId} (${newIp || 'Unknown IP'}). Performing full migration...`);
                       
                       if (client.session && newIp) {
-                          // Manually update DC info in session
+                          // 1. Update session data
                           client.session.setDC(newDcId, newIp, 443);
+                          const migratedSessionStr = client.session.save();
                           
-                          // Reconnect to new DC
+                          // 2. Destroy old client completely
+                          log("QR", "Destroying old client instance...");
                           await client.disconnect();
-                          await new Promise(r => setTimeout(r, 1000)); // Brief pause
-                          await client.connect();
+                          // Forcefully remove old session reference
+                          activeSessions.delete(deviceSessionId);
+
+                          // 3. Create NEW Client with migrated session
+                          log("QR", `Creating NEW client for DC ${newDcId}...`);
+                          client = await createTelegramClient(migratedSessionStr, apiId, apiHash);
+                          
+                          // 4. Update References
+                          activeSessions.set(deviceSessionId, { client, cleanup: null, passwordResolver: null });
                           
                           log("QR", `Connected to DC ${newDcId}. Resuming poll...`);
                       } else {
                           throw new Error(`Could not migrate to DC ${newDcId}. IP not found.`);
                       }
-                      // Loop continues and will call ExportLoginToken on the new DC
+                      // Loop continues and will call ExportLoginToken on the new client instance
                   }
               } catch (loopErr) {
                   if (loopErr.message && loopErr.message.includes('SESSION_PASSWORD_NEEDED')) {
-                      log("QR", "Password required (Unexpected in QR flow but handled)");
+                      log("QR", "🔐 Password required (2FA detected)");
                       socket.emit('telegram_password_needed', { hint: 'Password required' });
                       loopState.active = false;
+                      
                       // Setup resolver for password input
                       const sessionData = activeSessions.get(deviceSessionId);
                       if (sessionData) {
                           sessionData.passwordResolver = async (pwd) => {
                               try {
-                                  await client.signIn({ password: pwd });
-                                  socket.emit('telegram_login_success', { session: client.session.save() });
+                                  log("QR", "Attempting 2FA Sign In...");
+                                  // Ensure we are using the LATEST client variable
+                                  const currentActiveClient = activeSessions.get(deviceSessionId)?.client;
+                                  if(!currentActiveClient) throw new Error("Client lost during 2FA");
+                                  
+                                  await currentActiveClient.signIn({ password: pwd });
+                                  log("QR", "2FA Login Successful");
+                                  
+                                  let me = null;
+                                  try {
+                                      const user = await currentActiveClient.getMe();
+                                      me = { id: user.id.toString(), username: user.username, firstName: user.firstName };
+                                  } catch(e) {}
+
+                                  socket.emit('telegram_login_success', { 
+                                      session: currentActiveClient.session.save(),
+                                      user: me
+                                  });
                               } catch(e) {
+                                  log("QR_ERROR", "2FA Failed: " + e.message);
                                   socket.emit('telegram_error', { method: 'login', error: e.message });
                               }
                           };
@@ -295,17 +323,15 @@ io.on('connection', (socket) => {
                   } else {
                       log("QR_LOOP_ERROR", loopErr.message);
                       
-                      // Filter out common disconnection errors to keep retrying
-                      const isNetworkError = loopErr.message.includes("Connection") || loopErr.message.includes("Socket") || loopErr.message.includes("EPIPE");
+                      const isNetworkError = loopErr.message.includes("Connection") || loopErr.message.includes("Socket") || loopErr.message.includes("EPIPE") || loopErr.message.includes("TIMEOUT");
                       
                       if (loopErr.message.includes("AUTH_KEY") && !isNetworkError) {
-                          // Fatal auth error
                           throw loopErr;
                       }
                       
-                      // If it's the switchDC error (shouldn't happen now, but for safety), treat as fatal
                       if (loopErr.message.includes("switchDC")) {
-                          throw loopErr;
+                          // Ignore switchDC error if it happens during the race condition of migration
+                          log("QR", "Ignored switchDC error (handled manually)");
                       }
 
                       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -325,10 +351,11 @@ io.on('connection', (socket) => {
   socket.on('telegram_send_password', ({ password }) => {
       const sessionData = getSessionData();
       if (sessionData && sessionData.passwordResolver) {
-          log("QR", "Received 2FA password");
+          log("QR", "Received 2FA password from user");
           sessionData.passwordResolver(password);
           sessionData.passwordResolver = null; 
       } else {
+          // Fallback for non-QR flow (manual login)
           const client = getClient();
           if(client) {
               client.signIn({ password: String(password) })
