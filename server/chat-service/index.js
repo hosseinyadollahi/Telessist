@@ -54,13 +54,8 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
     
     let stringSession = new StringSession(sessionStr || "");
     
-    if (stringSession.serverAddress && stringSession.serverAddress.includes('omniday')) {
-        stringSession = new StringSession("");
-    }
-    
-    if (!sessionStr) {
-        stringSession.setDC(2, "149.154.167.50", 443);
-    }
+    // REMOVED: Forced DC connection. Let GramJS handle DC discovery.
+    // This fixes "Auth Token Invalid" issues if the user belongs to a different DC.
     
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
         connectionRetries: 5,
@@ -70,7 +65,7 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
         appVersion: "4.14.9", 
         langCode: "en",
         systemLangCode: "en-US",
-        langPack: "tdesktop", // IMPORTANT: Mimic TDesktop langpack
+        langPack: "tdesktop",
         timeout: 30, 
     });
     
@@ -112,7 +107,6 @@ io.on('connection', (socket) => {
       socketMap.set(socket.id, deviceSessionId);
 
       try {
-          // Cleanup old session if re-initializing same device ID to prevent conflicts
           if (activeSessions.has(deviceSessionId)) {
                const old = activeSessions.get(deviceSessionId);
                if(old.cleanup) clearTimeout(old.cleanup);
@@ -180,52 +174,48 @@ io.on('connection', (socket) => {
           log("QR", `Using Credentials - ID: ${apiId}, Hash: ${apiHash ? '***' : 'Missing'}`);
 
           if (!apiId || !apiHash) {
-              throw new Error("API Credentials missing. Reload and try again.");
+              throw new Error("API Credentials missing. Reload app.");
           }
 
-          const qrCodeCallback = async ({ token, expires }) => {
-              log("QR", "New QR Token generated");
-              const tokenBase64 = token.toString('base64')
-                  .replace(/\+/g, '-')
-                  .replace(/\//g, '_')
-                  .replace(/=+$/, '');
-              
-              socket.emit('telegram_qr_generated', { 
-                  token: tokenBase64, 
-                  expires: expires 
-              });
-          };
-
-          const passwordCallback = async (hint) => {
-              log("QR", "2FA Password needed for QR Login");
-              socket.emit('telegram_password_needed', { hint });
-              return new Promise((resolve, reject) => {
-                  if (sessionData) {
-                      sessionData.passwordResolver = resolve;
-                      setTimeout(() => {
-                          if(sessionData.passwordResolver === resolve) {
-                              reject(new Error("Password timeout"));
-                          }
-                      }, 180000); 
-                  } else {
-                      reject(new Error("Session lost during 2FA"));
-                  }
-              });
-          };
-
-          const onErrorCallback = (err) => {
-             log("QR_ERROR_CB", err.message || err);
-          };
-
-          const loginParams = {
+          // Define callbacks inline to ensure closure context
+          const user = await client.signInUserWithQrCode({
               apiId: Number(apiId),
               apiHash: String(apiHash),
-              qrCode: qrCodeCallback,
-              password: passwordCallback,
-              onError: onErrorCallback
-          };
-
-          const user = await client.signInUserWithQrCode(loginParams);
+              qrCode: async ({ token, expires }) => {
+                  log("QR", "New QR Token generated");
+                  // Standard Base64URL encoding without padding
+                  const tokenBase64 = token.toString('base64')
+                      .replace(/\+/g, '-')
+                      .replace(/\//g, '_')
+                      .replace(/=+$/, '');
+                  
+                  socket.emit('telegram_qr_generated', { 
+                      token: tokenBase64, 
+                      expires: expires 
+                  });
+              },
+              password: async (hint) => {
+                  log("QR", "2FA Password needed for QR Login");
+                  socket.emit('telegram_password_needed', { hint });
+                  return new Promise((resolve, reject) => {
+                      if (sessionData) {
+                          sessionData.passwordResolver = resolve;
+                          // Timeout for password entry (3 minutes)
+                          setTimeout(() => {
+                              if(sessionData.passwordResolver === resolve) {
+                                  reject(new Error("Password timeout"));
+                              }
+                          }, 180000); 
+                      } else {
+                          reject(new Error("Session lost during 2FA"));
+                      }
+                  });
+              },
+              onError: (err) => {
+                  log("QR_ERROR_CB", err.message || err);
+                  // Don't emit fatal error here, retries happen internally
+              }
+          });
 
           log("QR", "QR Login Successful!");
           socket.emit('telegram_login_success', { session: client.session.save() });
