@@ -77,10 +77,16 @@ const withTimeout = (promise, ms) => {
     ]);
 };
 
-const createTelegramClient = async (sessionStr, apiId, apiHash, extraConfig = {}) => {
+const createTelegramClient = async (sessionInput, apiId, apiHash, extraConfig = {}) => {
     log("CLIENT", `Creating client instance for API_ID: ${apiId}`);
     
-    let stringSession = new StringSession(sessionStr || "");
+    // Allow passing StringSession instance or string
+    let stringSession;
+    if (typeof sessionInput === 'string') {
+        stringSession = new StringSession(sessionInput);
+    } else {
+        stringSession = sessionInput;
+    }
     
     // Extract custom options
     const { disableUpdates, ...telegramConfig } = extraConfig;
@@ -108,7 +114,11 @@ const createTelegramClient = async (sessionStr, apiId, apiHash, extraConfig = {}
     
     log("CLIENT", "Connecting to Telegram Servers...");
     await client.connect();
-    log("CLIENT", "Connected successfully.");
+    
+    // DEBUG: Log where we actually connected
+    const sessionDc = client.session.dcId;
+    const sessionServer = client.session.serverAddress;
+    log("CLIENT", `Connected successfully. DC: ${sessionDc} | IP: ${sessionServer}`);
     
     return client;
 };
@@ -150,7 +160,7 @@ io.on('connection', (socket) => {
           } else {
               log("INIT", `✨ Creating NEW session`);
               if (apiId && apiHash) {
-                   client = await createTelegramClient(session, apiId, apiHash);
+                   client = await createTelegramClient(session || "", apiId, apiHash);
                    activeSessions.set(deviceSessionId, { client, cleanup: null, passwordResolver: null });
               }
           }
@@ -206,7 +216,7 @@ io.on('connection', (socket) => {
           return socket.emit('telegram_error', { error: "Missing API Credentials. Please refresh and try again." });
       }
 
-      log("QR", "Starting QR Login Sequence (Manual Mode)...");
+      log("QR", "Starting QR Login Sequence (Safe Mode)...");
 
       try {
           // Cleanup old client to prevent state conflicts
@@ -238,16 +248,14 @@ io.on('connection', (socket) => {
           while (loopState.active && socket.connected && loopCount < MAX_LOOPS) {
               loopCount++;
               try {
-                  // We use a manual Promise.race because GramJS internal timeout can be buggy during DC migration
-                  // Increase timeout to 10s to be safe during heavy load/migration
-                  
+                  // Increase internal timeout to 15s to be very safe
                   const result = await withTimeout(
                       client.invoke(new Api.auth.ExportLoginToken({
                           apiId: Number(apiId),
                           apiHash: String(apiHash),
                           exceptIds: []
                       })), 
-                      10000 
+                      15000 
                   );
 
                   if (result instanceof Api.auth.LoginTokenSuccess) {
@@ -273,80 +281,85 @@ io.on('connection', (socket) => {
                           .replace(/\//g, '_')
                           .replace(/=+$/, '');
                       
-                      // Only emit if token actually changed (prevents UI flicker and indicates real update)
                       if (tokenBase64 !== lastToken) {
                           lastToken = tokenBase64;
-                          log("QR", `New QR Code generated. Expires in: ${result.expires}`);
+                          log("QR", `New QR Code generated.`);
                           socket.emit('telegram_qr_generated', { 
                               token: tokenBase64, 
                               expires: result.expires 
                           });
                       } else {
-                          // Token hasn't changed, just waiting for scan
                           log("QR_POLL", `Waiting for scan... (Attempt ${loopCount})`);
                       }
                       
-                      // Wait 4 seconds before polling again (Polling too fast can cause issues)
-                      await new Promise(resolve => setTimeout(resolve, 4000));
+                      // Standard Wait: 5 seconds (Safer than 2 or 4)
+                      await new Promise(resolve => setTimeout(resolve, 5000));
 
                   } else if (result instanceof Api.auth.LoginTokenMigrateTo) {
                       const newDcId = result.dcId;
                       const newIp = DC_IPS[newDcId];
-                      log("QR", `⚠️ Account is on DC ${newDcId} (${newIp || 'Unknown IP'}). Performing full migration...`);
+                      
+                      // Check duplication
+                      if (client.session.dcId === newDcId) {
+                          log("QR_WARN", `Already on DC ${newDcId}. Ignoring migration request.`);
+                          await new Promise(resolve => setTimeout(resolve, 5000));
+                          continue;
+                      }
+
+                      log("QR", `⚠️  Migrating to DC ${newDcId} (${newIp})...`);
                       
                       if (newIp) {
-                          // 1. Create FRESH session for the new DC
                           const migrationSession = new StringSession("");
                           migrationSession.setDC(newDcId, newIp, 443);
-                          const migrationSessionStr = migrationSession.save();
+
+                          log("QR", "Disconnecting old client...");
+                          // 1. Properly close old connection
+                          try { await client.disconnect(); } catch(e) {}
                           
-                          // 2. Destroy old client completely
-                          log("QR", "Destroying old client instance...");
-                          try { await client.disconnect(); } catch(e) { log("QR", "Old client disconnect error (ignoring): " + e.message); }
-                          
+                          // 2. WAIT a bit to let the socket close fully (prevents race conditions)
+                          await new Promise(resolve => setTimeout(resolve, 2000));
+
                           activeSessions.delete(deviceSessionId);
-                          lastToken = null; // Reset token tracking so new DC token is emitted immediately
+                          lastToken = null; 
 
-                          await new Promise(resolve => setTimeout(resolve, 1000));
-
-                          // 3. Create NEW Client with migrated session (Disable Updates)
-                          log("QR", `Creating NEW client for DC ${newDcId} with fresh session...`);
+                          // 3. Create NEW Client
+                          log("QR", `Connecting to DC ${newDcId}...`);
+                          client = await createTelegramClient(migrationSession, apiId, apiHash, { 
+                              timeout: 60,
+                              disableUpdates: true 
+                          });
                           
-                          let retryCount = 0;
-                          let connected = false;
-                          
-                          while(retryCount < 3 && !connected) {
-                              try {
-                                  client = await createTelegramClient(migrationSessionStr, apiId, apiHash, { 
-                                      timeout: 60,
-                                      disableUpdates: true 
-                                  });
-                                  connected = true;
-                              } catch(connErr) {
-                                  retryCount++;
-                                  log("QR", `Connection attempt ${retryCount} failed: ${connErr.message}`);
-                                  if (retryCount >= 3) throw connErr;
-                                  await new Promise(r => setTimeout(r, 2000));
-                              }
-                          }
-                          
-                          // 4. Update References
                           activeSessions.set(deviceSessionId, { client, cleanup: null, passwordResolver: null });
                           socketMap.set(socket.id, deviceSessionId);
                           
-                          log("QR", `Connected to DC ${newDcId}. Resuming poll...`);
-                          // Continue to next loop iteration immediately
+                          log("QR", `Migration Complete. Resuming poll...`);
                           continue;
-                      } else {
-                          throw new Error(`Could not migrate to DC ${newDcId}. IP not found.`);
                       }
                   }
               } catch (loopErr) {
                   const errorMessage = loopErr.message || loopErr.errorMessage || "";
+                  log("QR_LOOP_WARN", `Poll error: ${errorMessage}`);
+
+                  // --- CRITICAL FLOOD WAIT HANDLING ---
+                  // If we get a flood wait, we MUST sleep for that duration.
+                  // Formats: "FLOOD_WAIT_X" or "A wait of X seconds is required"
+                  let waitSeconds = 0;
                   
-                  // Comprehensive check for Password Needed
-                  if (errorMessage.includes('SESSION_PASSWORD_NEEDED') || errorMessage.includes('password')) {
-                      log("QR", "🔐 Password required (2FA detected)");
+                  if (errorMessage.includes("FLOOD_WAIT_")) {
+                       const parts = errorMessage.split('_');
+                       waitSeconds = parseInt(parts[parts.length - 1]);
+                  } else if (errorMessage.includes("seconds")) {
+                       const match = errorMessage.match(/(\d+)\s+seconds/);
+                       if (match) waitSeconds = parseInt(match[1]);
+                  }
+
+                  if (waitSeconds > 0) {
+                      log("QR_FLOOD", `🚫 FLOOD WAIT DETECTED! Sleeping for ${waitSeconds} seconds...`);
+                      // Sleep exactly what allows asks + 1 second buffer
+                      await new Promise(resolve => setTimeout(resolve, (waitSeconds + 1) * 1000));
+                  } else if (errorMessage.includes('SESSION_PASSWORD_NEEDED') || errorMessage.includes('password')) {
+                      // ... existing password logic ...
+                      log("QR", "🔐 Password required");
                       socket.emit('telegram_password_needed', { hint: 'Password required' });
                       loopState.active = false;
                       
@@ -354,49 +367,34 @@ io.on('connection', (socket) => {
                       if (sessionData) {
                           sessionData.passwordResolver = async (pwd) => {
                               try {
-                                  log("QR", "Attempting 2FA Sign In...");
                                   const currentActiveClient = activeSessions.get(deviceSessionId)?.client;
-                                  if(!currentActiveClient) throw new Error("Client lost during 2FA");
-                                  
-                                  // Ensure we are connected
                                   if(!currentActiveClient.connected) await currentActiveClient.connect();
-
                                   await currentActiveClient.signIn({ password: pwd });
-                                  log("QR", "2FA Login Successful");
                                   
                                   let me = null;
                                   try {
                                       const user = await currentActiveClient.getMe();
                                       me = { id: user.id.toString(), username: user.username, firstName: user.firstName };
                                   } catch(e) {}
-
-                                  socket.emit('telegram_login_success', { 
-                                      session: currentActiveClient.session.save(),
-                                      user: me
-                                  });
+                                  
+                                  socket.emit('telegram_login_success', { session: currentActiveClient.session.save(), user: me });
                               } catch(e) {
-                                  log("QR_ERROR", "2FA Failed: " + e.message);
                                   socket.emit('telegram_error', { method: 'login', error: e.message });
                               }
                           };
                       }
                       break;
-                  } else if (errorMessage.includes("timed out")) {
-                      log("QR_WARN", "Poll timed out. Retrying...");
-                      // Just continue loop, don't crash
+                  } else if (errorMessage.includes("timed out") || errorMessage.includes("TIMEOUT")) {
+                      log("QR_WARN", "Request timed out. Waiting 5s before retry...");
+                      await new Promise(resolve => setTimeout(resolve, 5000));
                       continue;
+                  } else if (errorMessage.includes("AUTH_KEY")) {
+                       log("QR_FATAL", "Auth Key Invalid. Breaking loop.");
+                       socket.emit('telegram_error', { method: 'qr', error: "Auth Key Invalid. Restart." });
+                       break;
                   } else {
-                      // Log specific loop errors but don't crash
-                      log("QR_LOOP_WARN", `Poll error: ${errorMessage}`);
-                      
-                      if (errorMessage.includes("AUTH_KEY") && !errorMessage.includes("TIMEOUT")) {
-                           log("QR_FATAL", "Auth Key Invalid");
-                           socket.emit('telegram_error', { method: 'qr', error: "Auth Key Invalid. Restart." });
-                           break;
-                      }
-                      
-                      // Wait before retrying
-                      await new Promise(resolve => setTimeout(resolve, 2000));
+                      // Unknown error, wait 5s to be safe
+                      await new Promise(resolve => setTimeout(resolve, 5000));
                   }
               }
           }

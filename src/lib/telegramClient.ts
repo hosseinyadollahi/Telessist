@@ -71,7 +71,8 @@ export const initClient = async (apiId: number, apiHash: string) => {
 
     socket.emit('telegram_init', { apiId, apiHash, session: sessionStr, deviceSessionId });
     
-    const res: any = await waitForEvent('telegram_init_success', 'telegram_error', 60000);
+    // Increased timeout to 120000 (2 minutes) to handle slow DC migrations or connection issues
+    const res: any = await waitForEvent('telegram_init_success', 'telegram_error', 120000);
     
     if (res.session && res.session !== sessionStr) {
         sessionStr = res.session;
