@@ -54,7 +54,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           msg = `Too many attempts. Please wait ${formatSeconds(seconds)} before trying again.`;
           setShowQrOption(true);
       } else if (msg.includes("wait of")) {
-          // Fallback parsing for raw "wait of X seconds"
           const match = msg.match(/(\d+)\s+seconds/);
           if (match) {
               const seconds = parseInt(match[1]);
@@ -67,7 +66,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       setIsLoading(false);
   };
 
-  // Step 1: Initialize Client
   const handleInitClient = async (e: React.FormEvent) => {
       e.preventDefault();
       if(!apiId || !apiHash) {
@@ -75,7 +73,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           return;
       }
       
-      // Save credentials
       localStorage.setItem('telegram_api_id', apiId);
       localStorage.setItem('telegram_api_hash', apiHash);
 
@@ -92,19 +89,16 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       }
   };
 
-  // Switch to Phone mode
   const handleMethodPhone = () => {
       setStep('phone');
       setError('');
   };
 
-  // Switch to QR mode
   const handleMethodQR = () => {
       setStep('qr');
       startQrFlow();
   };
 
-  // QR Logic
   const startQrFlow = async () => {
       setIsLoading(true);
       setLoadingMsg("Generating QR Code...");
@@ -113,7 +107,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       
       try {
           const client = getClient();
-          // Type cast specifically for the custom method on our proxy client
           const res: any = await (client as any).startQrLogin((token: string) => {
               setQrToken(token);
               setIsLoading(false); 
@@ -130,7 +123,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       }
   };
 
-  // Step 2: Send Code (Phone Mode)
   const handleSendCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -166,7 +158,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     }
   };
 
-  // Step 3: Verify Code
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -198,7 +189,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     }
   };
 
-  // Step 4: 2FA Password
   const handlePassword = async (e: React.FormEvent) => {
       e.preventDefault();
       setIsLoading(true);
@@ -337,9 +327,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
                     </div>
                 ) : (
                     <div className="bg-white p-4 rounded-xl inline-block mb-4 shadow-xl">
-                        {/* Use public API for QR generation to avoid heavy dependencies */}
                         <img 
-                            src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=tg://login?token=${qrToken}`} 
+                            src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(`tg://login?token=${qrToken}`)}`} 
                             alt="Scan QR Code" 
                             className="w-48 h-48"
                         />
@@ -444,7 +433,6 @@ export default function Login({ onLoginSuccess }: LoginProps) {
                 <span>{error}</span>
              </div>
              
-             {/* Intelligent QR Suggestion */}
              {showQrOption && (
                  <button 
                     onClick={handleMethodQR}
