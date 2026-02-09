@@ -60,7 +60,7 @@ const socketMap = new Map();
 // Map<socketId, { active: boolean }>
 const qrLoops = new Map();
 
-const createTelegramClient = async (sessionStr, apiId, apiHash) => {
+const createTelegramClient = async (sessionStr, apiId, apiHash, extraConfig = {}) => {
     log("CLIENT", `Creating client instance for API_ID: ${apiId}`);
     
     let stringSession = new StringSession(sessionStr || "");
@@ -73,7 +73,8 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
         appVersion: "1.0.0", 
         langCode: "en",
         systemLangCode: "en-US",
-        timeout: 30, 
+        timeout: 60, // Increased default timeout
+        ...extraConfig
     });
     
     client._customApiId = Number(apiId);
@@ -200,7 +201,7 @@ io.on('connection', (socket) => {
               appVersion: "1.0.0",
               langCode: "en",
               systemLangCode: "en-US",
-              timeout: 30,
+              timeout: 60,
           });
           
           client._customApiId = Number(apiId);
@@ -267,16 +268,34 @@ io.on('connection', (socket) => {
                           
                           // 2. Destroy old client completely
                           log("QR", "Destroying old client instance...");
-                          await client.disconnect();
-                          // Forcefully remove old session reference
+                          try { await client.disconnect(); } catch(e) { log("QR", "Old client disconnect error (ignoring): " + e.message); }
                           activeSessions.delete(deviceSessionId);
 
-                          // 3. Create NEW Client with migrated session
-                          log("QR", `Creating NEW client for DC ${newDcId}...`);
-                          client = await createTelegramClient(migratedSessionStr, apiId, apiHash);
+                          // Wait for socket cleanup
+                          await new Promise(resolve => setTimeout(resolve, 2000));
+
+                          // 3. Create NEW Client with migrated session AND HIGHER TIMEOUT
+                          log("QR", `Creating NEW client for DC ${newDcId} with extended timeout...`);
+                          
+                          // Retry loop for creating the new client
+                          let retryCount = 0;
+                          let connected = false;
+                          
+                          while(retryCount < 3 && !connected) {
+                              try {
+                                  client = await createTelegramClient(migratedSessionStr, apiId, apiHash, { timeout: 120 });
+                                  connected = true;
+                              } catch(connErr) {
+                                  retryCount++;
+                                  log("QR", `Connection attempt ${retryCount} failed: ${connErr.message}`);
+                                  if (retryCount >= 3) throw connErr;
+                                  await new Promise(r => setTimeout(r, 2000));
+                              }
+                          }
                           
                           // 4. Update References
                           activeSessions.set(deviceSessionId, { client, cleanup: null, passwordResolver: null });
+                          socketMap.set(socket.id, deviceSessionId);
                           
                           log("QR", `Connected to DC ${newDcId}. Resuming poll...`);
                       } else {
@@ -330,7 +349,6 @@ io.on('connection', (socket) => {
                       }
                       
                       if (loopErr.message.includes("switchDC")) {
-                          // Ignore switchDC error if it happens during the race condition of migration
                           log("QR", "Ignored switchDC error (handled manually)");
                       }
 
