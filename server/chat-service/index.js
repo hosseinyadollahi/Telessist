@@ -76,13 +76,13 @@ const createTelegramClient = async (sessionStr, apiId, apiHash, extraConfig = {}
         appVersion: "1.0.0", 
         langCode: "en",
         systemLangCode: "en-US",
-        timeout: 60, // Default timeout
+        timeout: 30, // Default timeout
         ...telegramConfig
     });
     
     // Fix: Disable the internal update loop to prevent TIMEOUTs during login/migration flows
     if (disableUpdates) {
-        client._updateLoop = async () => { /* No-op */ };
+        client._updateLoop = async () => { /* No-op to prevent polling updates */ };
     }
 
     client._customApiId = Number(apiId);
@@ -213,13 +213,19 @@ io.on('connection', (socket) => {
 
           log("QR", "Entering QR Polling Loop...");
 
-          while (loopState.active && socket.connected) {
+          // Protection against infinite loops
+          let loopCount = 0;
+          const MAX_LOOPS = 200; 
+
+          while (loopState.active && socket.connected && loopCount < MAX_LOOPS) {
+              loopCount++;
               try {
+                  // Add a request timeout to prevent hanging forever if DC is unresponsive
                   const result = await client.invoke(new Api.auth.ExportLoginToken({
                       apiId: Number(apiId),
                       apiHash: String(apiHash),
                       exceptIds: []
-                  }));
+                  }), { requestTimeout: 15000 }); // 15s timeout for this request
 
                   if (result instanceof Api.auth.LoginTokenSuccess) {
                       log("QR", "✅ Login Token Success!");
@@ -297,12 +303,17 @@ io.on('connection', (socket) => {
                           socketMap.set(socket.id, deviceSessionId);
                           
                           log("QR", `Connected to DC ${newDcId}. Resuming poll...`);
+                          // Continue to next loop iteration immediately
+                          continue;
                       } else {
                           throw new Error(`Could not migrate to DC ${newDcId}. IP not found.`);
                       }
                   }
               } catch (loopErr) {
-                  if (loopErr.message && loopErr.message.includes('SESSION_PASSWORD_NEEDED')) {
+                  const errorMessage = loopErr.message || loopErr.errorMessage || "";
+                  
+                  // Comprehensive check for Password Needed
+                  if (errorMessage.includes('SESSION_PASSWORD_NEEDED')) {
                       log("QR", "🔐 Password required (2FA detected)");
                       socket.emit('telegram_password_needed', { hint: 'Password required' });
                       loopState.active = false;
@@ -315,6 +326,9 @@ io.on('connection', (socket) => {
                                   const currentActiveClient = activeSessions.get(deviceSessionId)?.client;
                                   if(!currentActiveClient) throw new Error("Client lost during 2FA");
                                   
+                                  // Ensure we are connected
+                                  if(!currentActiveClient.connected) await currentActiveClient.connect();
+
                                   await currentActiveClient.signIn({ password: pwd });
                                   log("QR", "2FA Login Successful");
                                   
@@ -336,19 +350,18 @@ io.on('connection', (socket) => {
                       }
                       break;
                   } else {
-                      log("QR_LOOP_ERROR", loopErr.message);
+                      // Log specific loop errors but don't crash
+                      log("QR_LOOP_WARN", `Poll error: ${errorMessage}`);
                       
-                      const isNetworkError = loopErr.message.includes("Connection") || loopErr.message.includes("Socket") || loopErr.message.includes("EPIPE") || loopErr.message.includes("TIMEOUT");
-                      
-                      if (loopErr.message.includes("AUTH_KEY") && !isNetworkError) {
-                          throw loopErr;
+                      // If error is about network/timeout, just wait and retry
+                      // If it's a fatal Auth error, break.
+                      if (errorMessage.includes("AUTH_KEY") && !errorMessage.includes("TIMEOUT")) {
+                           log("QR_FATAL", "Auth Key Invalid");
+                           socket.emit('telegram_error', { method: 'qr', error: "Auth Key Invalid. Restart." });
+                           break;
                       }
                       
-                      if (loopErr.message.includes("switchDC")) {
-                          log("QR", "Ignored switchDC error (handled manually)");
-                      }
-                      
-                      // If timeout occurred, just continue loop
+                      // Wait before retrying
                       await new Promise(resolve => setTimeout(resolve, 2000));
                   }
               }
