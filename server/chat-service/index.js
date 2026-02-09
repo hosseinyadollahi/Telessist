@@ -65,6 +65,9 @@ const createTelegramClient = async (sessionStr, apiId, apiHash, extraConfig = {}
     
     let stringSession = new StringSession(sessionStr || "");
     
+    // Extract custom options
+    const { disableUpdates, ...telegramConfig } = extraConfig;
+
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
         connectionRetries: 5,
         useWSS: false, 
@@ -74,12 +77,17 @@ const createTelegramClient = async (sessionStr, apiId, apiHash, extraConfig = {}
         langCode: "en",
         systemLangCode: "en-US",
         timeout: 60, // Default timeout
-        ...extraConfig
+        ...telegramConfig
     });
     
+    // Fix: Disable the internal update loop to prevent TIMEOUTs during login/migration flows
+    if (disableUpdates) {
+        client._updateLoop = async () => { /* No-op */ };
+    }
+
     client._customApiId = Number(apiId);
     client._customApiHash = String(apiHash);
-    client.setLogLevel("error");
+    client.setLogLevel("none"); // Reduce internal library logs
     
     log("CLIENT", "Connecting to Telegram Servers...");
     await client.connect();
@@ -192,23 +200,11 @@ io.on('connection', (socket) => {
 
           log("QR", "Creating Fresh Client for QR...");
           
-          // Initial Client Creation
-          let client = new TelegramClient(new StringSession(""), Number(apiId), String(apiHash), {
-              connectionRetries: 5,
-              useWSS: false,
-              deviceModel: "Telegram Web Clone",
-              systemVersion: "Web",
-              appVersion: "1.0.0",
-              langCode: "en",
-              systemLangCode: "en-US",
+          // Initial Client Creation for QR (Disable Updates)
+          let client = await createTelegramClient("", apiId, apiHash, { 
               timeout: 60,
+              disableUpdates: true 
           });
-          
-          client._customApiId = Number(apiId);
-          client._customApiHash = String(apiHash);
-          client.setLogLevel("error");
-
-          await client.connect();
           
           if (deviceSessionId) {
              activeSessions.set(deviceSessionId, { client, cleanup: null, passwordResolver: null });
@@ -263,8 +259,6 @@ io.on('connection', (socket) => {
                       
                       if (newIp) {
                           // 1. Create FRESH session for the new DC
-                          // We do NOT want to carry over the old Auth Key as it is invalid for the new DC.
-                          // Creating a new StringSession and setting DC forces a new handshake.
                           const migrationSession = new StringSession("");
                           migrationSession.setDC(newDcId, newIp, 443);
                           const migrationSessionStr = migrationSession.save();
@@ -273,23 +267,22 @@ io.on('connection', (socket) => {
                           log("QR", "Destroying old client instance...");
                           try { await client.disconnect(); } catch(e) { log("QR", "Old client disconnect error (ignoring): " + e.message); }
                           
-                          // Remove reference immediately
                           activeSessions.delete(deviceSessionId);
 
-                          // Wait for socket/network cleanup
                           await new Promise(resolve => setTimeout(resolve, 1000));
 
-                          // 3. Create NEW Client with migrated session AND HIGHER TIMEOUT
+                          // 3. Create NEW Client with migrated session (Disable Updates)
                           log("QR", `Creating NEW client for DC ${newDcId} with fresh session...`);
                           
-                          // Retry loop for creating the new client
                           let retryCount = 0;
                           let connected = false;
                           
                           while(retryCount < 3 && !connected) {
                               try {
-                                  // This will generate a new Auth Key for the new DC
-                                  client = await createTelegramClient(migrationSessionStr, apiId, apiHash, { timeout: 120 });
+                                  client = await createTelegramClient(migrationSessionStr, apiId, apiHash, { 
+                                      timeout: 60,
+                                      disableUpdates: true 
+                                  });
                                   connected = true;
                               } catch(connErr) {
                                   retryCount++;
@@ -314,13 +307,11 @@ io.on('connection', (socket) => {
                       socket.emit('telegram_password_needed', { hint: 'Password required' });
                       loopState.active = false;
                       
-                      // Setup resolver for password input
                       const sessionData = activeSessions.get(deviceSessionId);
                       if (sessionData) {
                           sessionData.passwordResolver = async (pwd) => {
                               try {
                                   log("QR", "Attempting 2FA Sign In...");
-                                  // Ensure we are using the LATEST client variable
                                   const currentActiveClient = activeSessions.get(deviceSessionId)?.client;
                                   if(!currentActiveClient) throw new Error("Client lost during 2FA");
                                   
@@ -356,7 +347,8 @@ io.on('connection', (socket) => {
                       if (loopErr.message.includes("switchDC")) {
                           log("QR", "Ignored switchDC error (handled manually)");
                       }
-
+                      
+                      // If timeout occurred, just continue loop
                       await new Promise(resolve => setTimeout(resolve, 2000));
                   }
               }
