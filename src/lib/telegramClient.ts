@@ -31,12 +31,25 @@ try {
     sessionStr = localStorage.getItem("telegram_session") || "";
 } catch (e) {}
 
-const waitForEvent = (eventName: string, errorEventName = 'telegram_error', timeout = 30000): Promise<any> => {
+/**
+ * SAFE EMIT HELPER
+ * Registers event listeners BEFORE emitting to prevent race conditions.
+ */
+const emitAndWait = (
+    emitName: string, 
+    emitData: any, 
+    successEvent: string, 
+    errorEvent = 'telegram_error', 
+    timeout = 60000
+): Promise<any> => {
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-            cleanup();
-            reject(new Error(`Timeout waiting for ${eventName}`));
-        }, timeout);
+        let timer: any;
+
+        const cleanup = () => {
+            socket.off(successEvent, onSuccess);
+            socket.off(errorEvent, onError);
+            if (timer) clearTimeout(timer);
+        };
 
         const onSuccess = (data: any) => {
             cleanup();
@@ -45,17 +58,27 @@ const waitForEvent = (eventName: string, errorEventName = 'telegram_error', time
 
         const onError = (data: any) => {
              cleanup();
+             // If error is specifically about password needed, we still reject 
+             // but caller can handle it by checking error message
              reject(new Error(data.error || "Unknown Error"));
         };
 
-        const cleanup = () => {
-            socket.off(eventName, onSuccess);
-            socket.off(errorEventName, onError);
-            clearTimeout(timer);
-        };
+        // 1. Register Listeners FIRST
+        socket.on(successEvent, onSuccess);
+        socket.on(errorEvent, onError);
 
-        socket.on(eventName, onSuccess);
-        socket.on(errorEventName, onError);
+        // 2. Emit Request
+        if (emitData !== undefined) {
+             socket.emit(emitName, emitData);
+        } else {
+             socket.emit(emitName);
+        }
+
+        // 3. Set Timeout
+        timer = setTimeout(() => {
+            cleanup();
+            reject(new Error(`Timeout waiting for ${successEvent}`));
+        }, timeout);
     });
 };
 
@@ -69,10 +92,14 @@ export const initClient = async (apiId: number, apiHash: string) => {
         throw new Error("Failed to generate Device Session ID");
     }
 
-    socket.emit('telegram_init', { apiId, apiHash, session: sessionStr, deviceSessionId });
-    
-    // Increased timeout to 120000 (2 minutes) to handle slow DC migrations or connection issues
-    const res: any = await waitForEvent('telegram_init_success', 'telegram_error', 120000);
+    // Use safe emitAndWait
+    const res: any = await emitAndWait(
+        'telegram_init',
+        { apiId, apiHash, session: sessionStr, deviceSessionId },
+        'telegram_init_success',
+        'telegram_error',
+        120000 // 2 min timeout for init/migration
+    );
     
     if (res.session && res.session !== sessionStr) {
         sessionStr = res.session;
@@ -94,19 +121,51 @@ const createProxyClient = (userCtx: any) => {
         getMe: async () => userCtx,
 
         sendCode: async (params: any, phone: string) => {
-            socket.emit('telegram_send_code', { phone });
-            return await waitForEvent('telegram_send_code_success', 'telegram_error', 120000);
+            return await emitAndWait(
+                'telegram_send_code',
+                { phone },
+                'telegram_send_code_success',
+                'telegram_error',
+                120000
+            );
         },
 
-        // New: Start QR Login Flow
+        signIn: async (params: any) => {
+             let emitName = 'telegram_login';
+             let emitPayload = params;
+
+             if (params.password) {
+                 emitName = 'telegram_send_password';
+                 emitPayload = { password: params.password };
+             }
+             
+             const res: any = await emitAndWait(
+                 emitName,
+                 emitPayload,
+                 'telegram_login_success',
+                 'telegram_error',
+                 60000
+             );
+
+             if (res.session) {
+                 try { localStorage.setItem("telegram_session", res.session); } catch(e){}
+             }
+             return res;
+        },
+
+        // QR Flow handles its own events because it's a stream of updates
         startQrLogin: (onQrRecieved: (token: string) => void) => {
-            // Remove old listeners to prevent duplicates
+            // Clean previous listeners
             socket.off('telegram_qr_generated'); 
+            socket.off('telegram_login_success');
+            socket.off('telegram_error');
+            socket.off('telegram_password_needed');
+
+            // Setup new listeners
             socket.on('telegram_qr_generated', (data: any) => {
                 onQrRecieved(data.token);
             });
             
-            // Return a promise that resolves when login is successful (or needs pass)
             return new Promise((resolve, reject) => {
                 const cleanup = () => {
                     socket.off('telegram_qr_generated');
@@ -124,16 +183,14 @@ const createProxyClient = (userCtx: any) => {
                 };
 
                 const onError = (err: any) => {
-                    if(err.method === 'qrLogin' || !err.method) {
+                    // Only reject if it's a login error, not a polling retry warning
+                    if(err.method === 'qrLogin' || !err.method || err.error.includes('Invalid')) {
                         cleanup();
                         reject(new Error(err.error));
                     }
                 };
 
                 const onPassword = (hint: any) => {
-                    // CLEANUP IS REQUIRED HERE:
-                    // We are transitioning from "QR Phase" to "Password Phase".
-                    // The 'signIn' method will handle the rest (sending password and waiting for success).
                     cleanup();
                     resolve({ passwordNeeded: true, hint });
                 };
@@ -142,38 +199,33 @@ const createProxyClient = (userCtx: any) => {
                 socket.on('telegram_error', onError);
                 socket.on('telegram_password_needed', onPassword);
 
-                // Emit AFTER listeners are attached to ensure we don't miss immediate events
+                // Emit AFTER listeners are ready
                 socket.emit('telegram_login_qr');
             });
         },
 
-        signIn: async (params: any) => {
-             if (params.password) {
-                 socket.emit('telegram_send_password', { password: params.password });
-             } else {
-                 socket.emit('telegram_login', params);
-             }
-             
-             const res: any = await waitForEvent('telegram_login_success', 'telegram_error', 60000);
-             if (res.session) {
-                 try { localStorage.setItem("telegram_session", res.session); } catch(e){}
-             }
-             return res;
-        },
-
         getDialogs: async (params: any) => {
-            socket.emit('telegram_get_dialogs');
-            return await waitForEvent('telegram_dialogs_data');
+            return await emitAndWait(
+                'telegram_get_dialogs',
+                undefined,
+                'telegram_dialogs_data'
+            );
         },
 
         getMessages: async (chatId: any, params: any) => {
-            socket.emit('telegram_get_messages', { chatId });
-            return await waitForEvent('telegram_messages_data');
+            return await emitAndWait(
+                'telegram_get_messages',
+                { chatId },
+                'telegram_messages_data'
+            );
         },
 
         sendMessage: async (chatId: any, params: any) => {
-             socket.emit('telegram_send_message', { chatId, message: params.message });
-             return await waitForEvent('telegram_message_sent'); 
+             return await emitAndWait(
+                 'telegram_send_message',
+                 { chatId, message: params.message },
+                 'telegram_message_sent'
+             );
         },
 
         disconnect: async () => {

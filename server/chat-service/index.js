@@ -99,13 +99,18 @@ const createTelegramClient = async (sessionInput, apiId, apiHash, extraConfig = 
         appVersion: "1.0.0", 
         langCode: "en",
         systemLangCode: "en-US",
-        timeout: 10, // Short timeout for connection
+        timeout: 15, // Increased connection timeout slightly
         ...telegramConfig
     });
     
-    // Fix: Disable the internal update loop to prevent TIMEOUTs during login/migration flows
+    // --- CRITICAL FIX: AGGRESSIVELY KILL UPDATE LOOP ---
+    // The default update loop causes TIMEOUTS during QR generation/scanning
+    // because it tries to fetch messages before auth is complete.
     if (disableUpdates) {
-        client._updateLoop = async () => { /* No-op to prevent polling updates */ };
+        // We overwrite the internal method with an empty async function
+        client._updateLoop = async () => { return; };
+        // We also set a flag that some versions of gramjs check
+        (client as any)._checkUpdates = false; 
     }
 
     client._customApiId = Number(apiId);
@@ -114,8 +119,12 @@ const createTelegramClient = async (sessionInput, apiId, apiHash, extraConfig = 
     
     log("CLIENT", "Connecting to Telegram Servers...");
     await client.connect();
+
+    // Re-apply update loop kill after connect (just in case connect() resets it)
+    if (disableUpdates) {
+        client._updateLoop = async () => { return; };
+    }
     
-    // DEBUG: Log where we actually connected
     const sessionDc = client.session.dcId;
     const sessionServer = client.session.serverAddress;
     log("CLIENT", `Connected successfully. DC: ${sessionDc} | IP: ${sessionServer}`);
@@ -216,7 +225,7 @@ io.on('connection', (socket) => {
           return socket.emit('telegram_error', { error: "Missing API Credentials. Please refresh and try again." });
       }
 
-      log("QR", "Starting QR Login Sequence (Safe Mode)...");
+      log("QR", "Starting QR Login Sequence (Aggressive No-Updates Mode)...");
 
       try {
           // Cleanup old client to prevent state conflicts
@@ -230,7 +239,7 @@ io.on('connection', (socket) => {
           // Initial Client Creation for QR (Disable Updates)
           let client = await createTelegramClient("", apiId, apiHash, { 
               timeout: 60,
-              disableUpdates: true 
+              disableUpdates: true // This is key
           });
           
           if (deviceSessionId) {
@@ -243,19 +252,19 @@ io.on('connection', (socket) => {
           // Protection against infinite loops
           let loopCount = 0;
           const MAX_LOOPS = 200; 
-          let lastToken = null; // Track token to avoid duplicate emits
+          let lastToken = null; 
 
           while (loopState.active && socket.connected && loopCount < MAX_LOOPS) {
               loopCount++;
               try {
-                  // Increase internal timeout to 15s to be very safe
+                  // Use withTimeout to prevent hanging forever
                   const result = await withTimeout(
                       client.invoke(new Api.auth.ExportLoginToken({
                           apiId: Number(apiId),
                           apiHash: String(apiHash),
                           exceptIds: []
                       })), 
-                      15000 
+                      10000 // 10s strict timeout for invoke
                   );
 
                   if (result instanceof Api.auth.LoginTokenSuccess) {
@@ -289,20 +298,19 @@ io.on('connection', (socket) => {
                               expires: result.expires 
                           });
                       } else {
-                          log("QR_POLL", `Waiting for scan... (Attempt ${loopCount})`);
+                          // Heartbeat log
+                          if(loopCount % 5 === 0) log("QR_POLL", `Waiting for scan... (Attempt ${loopCount})`);
                       }
                       
-                      // Standard Wait: 5 seconds (Safer than 2 or 4)
-                      await new Promise(resolve => setTimeout(resolve, 5000));
+                      await new Promise(resolve => setTimeout(resolve, 3000));
 
                   } else if (result instanceof Api.auth.LoginTokenMigrateTo) {
                       const newDcId = result.dcId;
                       const newIp = DC_IPS[newDcId];
                       
-                      // Check duplication
                       if (client.session.dcId === newDcId) {
                           log("QR_WARN", `Already on DC ${newDcId}. Ignoring migration request.`);
-                          await new Promise(resolve => setTimeout(resolve, 5000));
+                          await new Promise(resolve => setTimeout(resolve, 3000));
                           continue;
                       }
 
@@ -313,20 +321,17 @@ io.on('connection', (socket) => {
                           migrationSession.setDC(newDcId, newIp, 443);
 
                           log("QR", "Disconnecting old client...");
-                          // 1. Properly close old connection
                           try { await client.disconnect(); } catch(e) {}
                           
-                          // 2. WAIT a bit to let the socket close fully (prevents race conditions)
-                          await new Promise(resolve => setTimeout(resolve, 2000));
+                          await new Promise(resolve => setTimeout(resolve, 1500));
 
                           activeSessions.delete(deviceSessionId);
                           lastToken = null; 
 
-                          // 3. Create NEW Client
                           log("QR", `Connecting to DC ${newDcId}...`);
                           client = await createTelegramClient(migrationSession, apiId, apiHash, { 
                               timeout: 60,
-                              disableUpdates: true 
+                              disableUpdates: true // Keep updates disabled!
                           });
                           
                           activeSessions.set(deviceSessionId, { client, cleanup: null, passwordResolver: null });
@@ -338,39 +343,28 @@ io.on('connection', (socket) => {
                   }
               } catch (loopErr) {
                   const errorMessage = loopErr.message || loopErr.errorMessage || "";
-                  log("QR_LOOP_WARN", `Poll error: ${errorMessage}`);
-
-                  // --- CRITICAL FLOOD WAIT HANDLING ---
-                  // If we get a flood wait, we MUST sleep for that duration.
-                  // Formats: "FLOOD_WAIT_X" or "A wait of X seconds is required"
-                  let waitSeconds = 0;
                   
-                  if (errorMessage.includes("FLOOD_WAIT_")) {
-                       const parts = errorMessage.split('_');
-                       waitSeconds = parseInt(parts[parts.length - 1]);
-                  } else if (errorMessage.includes("seconds")) {
-                       const match = errorMessage.match(/(\d+)\s+seconds/);
-                       if (match) waitSeconds = parseInt(match[1]);
-                  }
-
-                  if (waitSeconds > 0) {
-                      log("QR_FLOOD", `🚫 FLOOD WAIT DETECTED! Sleeping for ${waitSeconds} seconds...`);
-                      // Sleep exactly what allows asks + 1 second buffer
-                      await new Promise(resolve => setTimeout(resolve, (waitSeconds + 1) * 1000));
-                  } else if (errorMessage.includes('SESSION_PASSWORD_NEEDED') || errorMessage.includes('password')) {
-                      // ... existing password logic ...
-                      log("QR", "🔐 Password required");
+                  // Check for Password Requirement FIRST
+                  if (errorMessage.includes('SESSION_PASSWORD_NEEDED') || errorMessage.includes('password')) {
+                      log("QR", "🔐 Password required (Caught in loop)");
                       socket.emit('telegram_password_needed', { hint: 'Password required' });
                       loopState.active = false;
                       
                       const sessionData = activeSessions.get(deviceSessionId);
                       if (sessionData) {
+                          // Define the resolver that the NEXT event (telegram_send_password) will trigger
                           sessionData.passwordResolver = async (pwd) => {
                               try {
+                                  log("QR_AUTH", "Attempting 2FA Sign In with provided password...");
                                   const currentActiveClient = activeSessions.get(deviceSessionId)?.client;
-                                  if(!currentActiveClient.connected) await currentActiveClient.connect();
-                                  await currentActiveClient.signIn({ password: pwd });
                                   
+                                  // Ensure connected
+                                  if(!currentActiveClient.connected) await currentActiveClient.connect();
+                                  
+                                  // We use signIn here
+                                  await currentActiveClient.signIn({ password: pwd });
+                                  log("QR_AUTH", "2FA Success!");
+
                                   let me = null;
                                   try {
                                       const user = await currentActiveClient.getMe();
@@ -379,23 +373,56 @@ io.on('connection', (socket) => {
                                   
                                   socket.emit('telegram_login_success', { session: currentActiveClient.session.save(), user: me });
                               } catch(e) {
+                                  log("QR_AUTH_ERR", e.message);
                                   socket.emit('telegram_error', { method: 'login', error: e.message });
                               }
                           };
                       }
-                      break;
-                  } else if (errorMessage.includes("timed out") || errorMessage.includes("TIMEOUT")) {
-                      log("QR_WARN", "Request timed out. Waiting 5s before retry...");
-                      await new Promise(resolve => setTimeout(resolve, 5000));
+                      break; // Break the QR loop, wait for password
+                  }
+
+                  // Handle Timeouts - Recreate Client
+                  if (errorMessage.includes("timed out") || errorMessage.includes("TIMEOUT")) {
+                      log("QR_WARN", "Polling timed out. Client may be stuck. Recreating connection...");
+                      
+                      try { await client.disconnect(); } catch(e) {}
+                      activeSessions.delete(deviceSessionId);
+                      
+                      // Recreate on the same DC (client.session has the current DC info)
+                      // We save the session string from the *current* client state to preserve DC info
+                      const currentSessionStr = client.session.save();
+                      
+                      client = await createTelegramClient(currentSessionStr, apiId, apiHash, {
+                          timeout: 60,
+                          disableUpdates: true
+                      });
+                      
+                      activeSessions.set(deviceSessionId, { client, cleanup: null, passwordResolver: null });
+                      socketMap.set(socket.id, deviceSessionId);
+                      
+                      continue; // Retry loop immediately
+                  }
+
+                  // Handle Flood Wait
+                  if (errorMessage.includes("FLOOD_WAIT") || errorMessage.includes("seconds")) {
+                      let waitSeconds = 5;
+                      const match = errorMessage.match(/(\d+)/);
+                      if (match) waitSeconds = parseInt(match[1]);
+                      log("QR_FLOOD", `Flood wait for ${waitSeconds}s`);
+                      await new Promise(resolve => setTimeout(resolve, (waitSeconds + 1) * 1000));
                       continue;
-                  } else if (errorMessage.includes("AUTH_KEY")) {
-                       log("QR_FATAL", "Auth Key Invalid. Breaking loop.");
+                  }
+
+                  // Fatal Errors
+                  if (errorMessage.includes("AUTH_KEY")) {
+                       log("QR_FATAL", "Auth Key Invalid. Restart.");
                        socket.emit('telegram_error', { method: 'qr', error: "Auth Key Invalid. Restart." });
                        break;
-                  } else {
-                      // Unknown error, wait 5s to be safe
-                      await new Promise(resolve => setTimeout(resolve, 5000));
                   }
+
+                  // Unknown minor errors
+                  log("QR_LOOP_WARN", `Poll error: ${errorMessage}`);
+                  await new Promise(resolve => setTimeout(resolve, 3000));
               }
           }
 
@@ -411,7 +438,7 @@ io.on('connection', (socket) => {
   socket.on('telegram_send_password', ({ password }) => {
       const sessionData = getSessionData();
       if (sessionData && sessionData.passwordResolver) {
-          log("QR", "Received 2FA password from user");
+          log("QR", "Received 2FA password from user. Executing resolver...");
           sessionData.passwordResolver(password);
           sessionData.passwordResolver = null; 
       } else {
