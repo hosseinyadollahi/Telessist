@@ -23,6 +23,15 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState('Connecting...');
   const [error, setError] = useState('');
+  const [showQrOption, setShowQrOption] = useState(false);
+
+  // Load saved credentials on mount
+  useEffect(() => {
+    const savedId = localStorage.getItem('telegram_api_id');
+    const savedHash = localStorage.getItem('telegram_api_hash');
+    if (savedId) setApiId(savedId);
+    if (savedHash) setApiHash(savedHash);
+  }, []);
 
   const formatSeconds = (seconds: number) => {
       const h = Math.floor(seconds / 3600);
@@ -34,6 +43,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const handleError = (err: any) => {
       console.error("Login Error Handler:", err);
       let msg = err.message || "Unknown error occurred";
+      setShowQrOption(false);
       
       if (msg.includes("TIMEOUT")) {
           msg = "Server is taking too long. Please try clicking Next again.";
@@ -42,12 +52,14 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       } else if (msg.includes("FLOOD_WAIT_")) {
           const seconds = parseInt(msg.split('_')[2]);
           msg = `Too many attempts. Please wait ${formatSeconds(seconds)} before trying again.`;
+          setShowQrOption(true);
       } else if (msg.includes("wait of")) {
           // Fallback parsing for raw "wait of X seconds"
           const match = msg.match(/(\d+)\s+seconds/);
           if (match) {
               const seconds = parseInt(match[1]);
               msg = `Too many attempts. Please wait ${formatSeconds(seconds)} before trying again.`;
+              setShowQrOption(true);
           }
       }
       
@@ -62,6 +74,11 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           setError("API ID and Hash are required.");
           return;
       }
+      
+      // Save credentials
+      localStorage.setItem('telegram_api_id', apiId);
+      localStorage.setItem('telegram_api_hash', apiHash);
+
       setIsLoading(true);
       setLoadingMsg("Initializing connection...");
       setError('');
@@ -78,6 +95,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   // Switch to Phone mode
   const handleMethodPhone = () => {
       setStep('phone');
+      setError('');
   };
 
   // Switch to QR mode
@@ -91,9 +109,11 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       setIsLoading(true);
       setLoadingMsg("Generating QR Code...");
       setError('');
+      setShowQrOption(false);
       
       try {
           const client = getClient();
+          // Type cast specifically for the custom method on our proxy client
           const res: any = await (client as any).startQrLogin((token: string) => {
               setQrToken(token);
               setIsLoading(false); 
@@ -116,6 +136,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
     setIsLoading(true);
     setLoadingMsg("Sending code...");
     setError('');
+    setShowQrOption(false);
 
     try {
       const client = getClient(); 
@@ -200,8 +221,10 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   }
 
   const handleResetSession = () => {
-      if(window.confirm("Start fresh? This clears local data.")) {
+      if(window.confirm("Start fresh? This clears local data and credentials.")) {
           clearSession();
+          localStorage.removeItem('telegram_api_id');
+          localStorage.removeItem('telegram_api_hash');
           window.location.reload();
       }
   };
@@ -415,14 +438,26 @@ export default function Login({ onLoginSuccess }: LoginProps) {
         )}
 
         {error && (
-          <div className="mt-6 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm flex items-center justify-center gap-2 animate-pulse text-center">
-             <div className="flex flex-col items-center gap-1">
+          <div className="mt-6 p-4 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-sm flex flex-col items-center justify-center gap-2 animate-pulse text-center">
+             <div className="flex items-center gap-2">
                 <WifiOff size={24} className="mb-1 opacity-70"/>
                 <span>{error}</span>
-                {(error.includes("taking too long") || error.includes("invalid") || error.includes("expired") || error.includes("wait")) && (
-                    <button onClick={handleResetSession} className="underline font-bold mt-1 text-red-300 hover:text-white">Start Over</button>
-                )}
              </div>
+             
+             {/* Intelligent QR Suggestion */}
+             {showQrOption && (
+                 <button 
+                    onClick={handleMethodQR}
+                    className="mt-3 bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-lg flex items-center gap-2 text-xs font-bold transition-all border border-white/20"
+                 >
+                     <QrCode size={16} />
+                     Try Login with QR Code instead
+                 </button>
+             )}
+
+             {(error.includes("taking too long") || error.includes("invalid") || error.includes("expired") || error.includes("wait")) && !showQrOption && (
+                <button onClick={handleResetSession} className="underline font-bold mt-1 text-red-300 hover:text-white">Start Over</button>
+             )}
           </div>
         )}
 

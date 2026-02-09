@@ -65,11 +65,12 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
         connectionRetries: 5,
         useWSS: false, 
-        deviceModel: "TDesktop", // Changed to TDesktop for maximum compatibility
+        deviceModel: "TDesktop", 
         systemVersion: "Windows 10",
         appVersion: "4.14.9", 
         langCode: "en",
         systemLangCode: "en-US",
+        langPack: "tdesktop", // IMPORTANT: Mimic TDesktop langpack
         timeout: 30, 
     });
     
@@ -115,7 +116,6 @@ io.on('connection', (socket) => {
           if (activeSessions.has(deviceSessionId)) {
                const old = activeSessions.get(deviceSessionId);
                if(old.cleanup) clearTimeout(old.cleanup);
-               // Don't disconnect immediately if it's a re-connect, but good practice to refresh for init
           }
 
           let client;
