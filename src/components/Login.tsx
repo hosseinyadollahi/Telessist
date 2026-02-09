@@ -24,6 +24,13 @@ export default function Login({ onLoginSuccess }: LoginProps) {
   const [loadingMsg, setLoadingMsg] = useState('Connecting...');
   const [error, setError] = useState('');
 
+  const formatSeconds = (seconds: number) => {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      return `${h}h ${m}m ${s}s`;
+  };
+
   const handleError = (err: any) => {
       console.error("Login Error Handler:", err);
       let msg = err.message || "Unknown error occurred";
@@ -32,6 +39,16 @@ export default function Login({ onLoginSuccess }: LoginProps) {
           msg = "Server is taking too long. Please try clicking Next again.";
       } else if (msg.includes("PHONE_CODE_INVALID")) {
           msg = "The code is invalid. Please try again or restart.";
+      } else if (msg.includes("FLOOD_WAIT_")) {
+          const seconds = parseInt(msg.split('_')[2]);
+          msg = `Too many attempts. Please wait ${formatSeconds(seconds)} before trying again.`;
+      } else if (msg.includes("wait of")) {
+          // Fallback parsing for raw "wait of X seconds"
+          const match = msg.match(/(\d+)\s+seconds/);
+          if (match) {
+              const seconds = parseInt(match[1]);
+              msg = `Too many attempts. Please wait ${formatSeconds(seconds)} before trying again.`;
+          }
       }
       
       setError(msg);
@@ -50,7 +67,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       setError('');
       try {
           await initClient(Number(apiId), apiHash);
-          setStep('method'); // Go to Method selection instead of Phone
+          setStep('method'); 
       } catch (err: any) {
           handleError(err);
       } finally {
@@ -77,10 +94,9 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       
       try {
           const client = getClient();
-          // Use a type assertion for the new method
           const res: any = await (client as any).startQrLogin((token: string) => {
               setQrToken(token);
-              setIsLoading(false); // Stop loading once QR is there
+              setIsLoading(false); 
           });
           
           if (res.passwordNeeded) {
@@ -168,10 +184,8 @@ export default function Login({ onLoginSuccess }: LoginProps) {
       setLoadingMsg("Checking password...");
       try {
           const client = getClient(); 
-          // signIn now handles sending password automatically via socket event
           await (client as any).signIn({
               password: password,
-              // These are ignored if checking 2FA via QR, but needed for Phone Login 2FA
               phone: phone,
               phoneCodeHash: phoneCodeHash,
               phoneCode: code
@@ -405,7 +419,7 @@ export default function Login({ onLoginSuccess }: LoginProps) {
              <div className="flex flex-col items-center gap-1">
                 <WifiOff size={24} className="mb-1 opacity-70"/>
                 <span>{error}</span>
-                {(error.includes("taking too long") || error.includes("invalid") || error.includes("expired")) && (
+                {(error.includes("taking too long") || error.includes("invalid") || error.includes("expired") || error.includes("wait")) && (
                     <button onClick={handleResetSession} className="underline font-bold mt-1 text-red-300 hover:text-white">Start Over</button>
                 )}
              </div>
