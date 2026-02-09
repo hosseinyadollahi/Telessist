@@ -55,12 +55,11 @@ const createTelegramClient = async (sessionStr, apiId, apiHash) => {
     const client = new TelegramClient(stringSession, Number(apiId), String(apiHash), {
         connectionRetries: 5,
         useWSS: false, 
-        deviceModel: "TDesktop", 
-        systemVersion: "Windows 10",
-        appVersion: "4.14.9", 
+        deviceModel: "Telegram Web Clone", 
+        systemVersion: "Web",
+        appVersion: "1.0.0", 
         langCode: "en",
         systemLangCode: "en-US",
-        langPack: "tdesktop",
         timeout: 30, 
     });
     
@@ -175,12 +174,11 @@ io.on('connection', (socket) => {
           const client = new TelegramClient(new StringSession(""), Number(apiId), String(apiHash), {
               connectionRetries: 5,
               useWSS: false,
-              deviceModel: "TDesktop",
-              systemVersion: "Windows 10",
-              appVersion: "4.14.9",
+              deviceModel: "Telegram Web Clone",
+              systemVersion: "Web",
+              appVersion: "1.0.0",
               langCode: "en",
               systemLangCode: "en-US",
-              langPack: "tdesktop",
               timeout: 30,
           });
           
@@ -198,10 +196,12 @@ io.on('connection', (socket) => {
           const sessionData = deviceSessionId ? activeSessions.get(deviceSessionId) : null;
 
           log("QR", "Invoking signInUserWithQrCode...");
-
-          // CRITICAL FIX: Do NOT pass apiId/apiHash again. The client already has them.
-          // Passing them again causes "Cannot read properties of undefined (reading 'qrCode')" in some library versions.
+          
+          // CRITICAL: apiId and apiHash MUST be present in the params for some versions of gramjs
+          // even if the client has them. We ensure they are correct primitives.
           await client.signInUserWithQrCode({
+              apiId: Number(apiId),
+              apiHash: String(apiHash),
               qrCode: async ({ token, expires }) => {
                   log("QR", "Token Received");
                   const tokenBase64 = token.toString('base64')
