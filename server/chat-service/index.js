@@ -195,45 +195,57 @@ io.on('connection', (socket) => {
           
           const sessionData = deviceSessionId ? activeSessions.get(deviceSessionId) : null;
 
+          log("QR", "Client connected. Defining Callbacks...");
+          
+          const qrCodeCallback = async ({ token, expires }) => {
+              log("QR", "Token Received");
+              const tokenBase64 = token.toString('base64')
+                  .replace(/\+/g, '-')
+                  .replace(/\//g, '_')
+                  .replace(/=+$/, '');
+              
+              socket.emit('telegram_qr_generated', { 
+                  token: tokenBase64, 
+                  expires: expires 
+              });
+          };
+
+          const passwordCallback = async (hint) => {
+              log("QR", "2FA Password Needed");
+              socket.emit('telegram_password_needed', { hint });
+              return new Promise((resolve, reject) => {
+                  if (sessionData) {
+                      sessionData.passwordResolver = resolve;
+                      setTimeout(() => {
+                          if(sessionData.passwordResolver === resolve) {
+                              reject(new Error("Password timeout"));
+                          }
+                      }, 120000); 
+                  } else {
+                      reject(new Error("Session context lost"));
+                  }
+              });
+          };
+
+          const errorCallback = (err) => {
+              log("QR_INTERNAL_ERROR", err.message || err);
+          };
+
+          // Wait a bit to ensure stability
+          await new Promise(r => setTimeout(r, 500));
+
           log("QR", "Invoking signInUserWithQrCode...");
           
-          // CRITICAL: apiId and apiHash MUST be present in the params for some versions of gramjs
-          // even if the client has them. We ensure they are correct primitives.
-          await client.signInUserWithQrCode({
+          const qrParams = {
               apiId: Number(apiId),
               apiHash: String(apiHash),
-              qrCode: async ({ token, expires }) => {
-                  log("QR", "Token Received");
-                  const tokenBase64 = token.toString('base64')
-                      .replace(/\+/g, '-')
-                      .replace(/\//g, '_')
-                      .replace(/=+$/, '');
-                  
-                  socket.emit('telegram_qr_generated', { 
-                      token: tokenBase64, 
-                      expires: expires 
-                  });
-              },
-              password: async (hint) => {
-                  log("QR", "2FA Password Needed");
-                  socket.emit('telegram_password_needed', { hint });
-                  return new Promise((resolve, reject) => {
-                      if (sessionData) {
-                          sessionData.passwordResolver = resolve;
-                          setTimeout(() => {
-                              if(sessionData.passwordResolver === resolve) {
-                                  reject(new Error("Password timeout"));
-                              }
-                          }, 120000); 
-                      } else {
-                          reject(new Error("Session context lost"));
-                      }
-                  });
-              },
-              onError: (err) => {
-                  log("QR_INTERNAL_ERROR", err.message || err);
-              }
-          });
+              qrCode: qrCodeCallback,
+              password: passwordCallback,
+              onError: errorCallback
+          };
+
+          // Use bind to ensure context if necessary, though instance method should handle it
+          await client.signInUserWithQrCode(qrParams);
 
           log("QR", "Login Successful!");
           socket.emit('telegram_login_success', { session: client.session.save() });
