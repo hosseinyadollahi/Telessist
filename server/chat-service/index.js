@@ -233,12 +233,13 @@ io.on('connection', (socket) => {
           // Protection against infinite loops
           let loopCount = 0;
           const MAX_LOOPS = 200; 
+          let lastToken = null; // Track token to avoid duplicate emits
 
           while (loopState.active && socket.connected && loopCount < MAX_LOOPS) {
               loopCount++;
               try {
                   // We use a manual Promise.race because GramJS internal timeout can be buggy during DC migration
-                  log("QR_POLL", `Checking status (Attempt ${loopCount})...`);
+                  // Increase timeout to 10s to be safe during heavy load/migration
                   
                   const result = await withTimeout(
                       client.invoke(new Api.auth.ExportLoginToken({
@@ -246,7 +247,7 @@ io.on('connection', (socket) => {
                           apiHash: String(apiHash),
                           exceptIds: []
                       })), 
-                      5000 // 5 seconds strict timeout
+                      10000 
                   );
 
                   if (result instanceof Api.auth.LoginTokenSuccess) {
@@ -272,13 +273,21 @@ io.on('connection', (socket) => {
                           .replace(/\//g, '_')
                           .replace(/=+$/, '');
                       
-                      socket.emit('telegram_qr_generated', { 
-                          token: tokenBase64, 
-                          expires: result.expires 
-                      });
+                      // Only emit if token actually changed (prevents UI flicker and indicates real update)
+                      if (tokenBase64 !== lastToken) {
+                          lastToken = tokenBase64;
+                          log("QR", `New QR Code generated. Expires in: ${result.expires}`);
+                          socket.emit('telegram_qr_generated', { 
+                              token: tokenBase64, 
+                              expires: result.expires 
+                          });
+                      } else {
+                          // Token hasn't changed, just waiting for scan
+                          log("QR_POLL", `Waiting for scan... (Attempt ${loopCount})`);
+                      }
                       
-                      // Wait 2 seconds before polling again
-                      await new Promise(resolve => setTimeout(resolve, 2000));
+                      // Wait 4 seconds before polling again (Polling too fast can cause issues)
+                      await new Promise(resolve => setTimeout(resolve, 4000));
 
                   } else if (result instanceof Api.auth.LoginTokenMigrateTo) {
                       const newDcId = result.dcId;
@@ -296,6 +305,7 @@ io.on('connection', (socket) => {
                           try { await client.disconnect(); } catch(e) { log("QR", "Old client disconnect error (ignoring): " + e.message); }
                           
                           activeSessions.delete(deviceSessionId);
+                          lastToken = null; // Reset token tracking so new DC token is emitted immediately
 
                           await new Promise(resolve => setTimeout(resolve, 1000));
 
