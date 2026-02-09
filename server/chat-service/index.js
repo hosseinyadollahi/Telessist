@@ -60,6 +60,23 @@ const socketMap = new Map();
 // Map<socketId, { active: boolean }>
 const qrLoops = new Map();
 
+// Helper to force a timeout on promises
+const withTimeout = (promise, ms) => {
+    let timeoutId;
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+            reject(new Error(`Promise timed out after ${ms}ms`));
+        }, ms);
+    });
+    return Promise.race([
+        promise.then((res) => {
+            clearTimeout(timeoutId);
+            return res;
+        }),
+        timeoutPromise
+    ]);
+};
+
 const createTelegramClient = async (sessionStr, apiId, apiHash, extraConfig = {}) => {
     log("CLIENT", `Creating client instance for API_ID: ${apiId}`);
     
@@ -76,7 +93,7 @@ const createTelegramClient = async (sessionStr, apiId, apiHash, extraConfig = {}
         appVersion: "1.0.0", 
         langCode: "en",
         systemLangCode: "en-US",
-        timeout: 30, // Default timeout
+        timeout: 10, // Short timeout for connection
         ...telegramConfig
     });
     
@@ -87,7 +104,7 @@ const createTelegramClient = async (sessionStr, apiId, apiHash, extraConfig = {}
 
     client._customApiId = Number(apiId);
     client._customApiHash = String(apiHash);
-    client.setLogLevel("none"); // Reduce internal library logs
+    client.setLogLevel("none"); 
     
     log("CLIENT", "Connecting to Telegram Servers...");
     await client.connect();
@@ -176,7 +193,7 @@ io.on('connection', (socket) => {
       const loopState = { active: true };
       qrLoops.set(socket.id, loopState);
 
-      const currentClient = getClient();
+      let currentClient = getClient();
       const deviceSessionId = socketMap.get(socket.id);
       
       let apiId, apiHash;
@@ -220,12 +237,17 @@ io.on('connection', (socket) => {
           while (loopState.active && socket.connected && loopCount < MAX_LOOPS) {
               loopCount++;
               try {
-                  // Add a request timeout to prevent hanging forever if DC is unresponsive
-                  const result = await client.invoke(new Api.auth.ExportLoginToken({
-                      apiId: Number(apiId),
-                      apiHash: String(apiHash),
-                      exceptIds: []
-                  }), { requestTimeout: 15000 }); // 15s timeout for this request
+                  // We use a manual Promise.race because GramJS internal timeout can be buggy during DC migration
+                  log("QR_POLL", `Checking status (Attempt ${loopCount})...`);
+                  
+                  const result = await withTimeout(
+                      client.invoke(new Api.auth.ExportLoginToken({
+                          apiId: Number(apiId),
+                          apiHash: String(apiHash),
+                          exceptIds: []
+                      })), 
+                      5000 // 5 seconds strict timeout
+                  );
 
                   if (result instanceof Api.auth.LoginTokenSuccess) {
                       log("QR", "✅ Login Token Success!");
@@ -313,7 +335,7 @@ io.on('connection', (socket) => {
                   const errorMessage = loopErr.message || loopErr.errorMessage || "";
                   
                   // Comprehensive check for Password Needed
-                  if (errorMessage.includes('SESSION_PASSWORD_NEEDED')) {
+                  if (errorMessage.includes('SESSION_PASSWORD_NEEDED') || errorMessage.includes('password')) {
                       log("QR", "🔐 Password required (2FA detected)");
                       socket.emit('telegram_password_needed', { hint: 'Password required' });
                       loopState.active = false;
@@ -349,12 +371,14 @@ io.on('connection', (socket) => {
                           };
                       }
                       break;
+                  } else if (errorMessage.includes("timed out")) {
+                      log("QR_WARN", "Poll timed out. Retrying...");
+                      // Just continue loop, don't crash
+                      continue;
                   } else {
                       // Log specific loop errors but don't crash
                       log("QR_LOOP_WARN", `Poll error: ${errorMessage}`);
                       
-                      // If error is about network/timeout, just wait and retry
-                      // If it's a fatal Auth error, break.
                       if (errorMessage.includes("AUTH_KEY") && !errorMessage.includes("TIMEOUT")) {
                            log("QR_FATAL", "Auth Key Invalid");
                            socket.emit('telegram_error', { method: 'qr', error: "Auth Key Invalid. Restart." });
