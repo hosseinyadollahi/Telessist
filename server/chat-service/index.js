@@ -42,6 +42,15 @@ const log = (tag, message, data = null) => {
     }
 };
 
+// Telegram Production Data Centers
+const DC_IPS = {
+    1: "149.154.175.53",
+    2: "149.154.167.50",
+    3: "149.154.175.100",
+    4: "149.154.167.91",
+    5: "91.108.56.130"
+};
+
 // Map<deviceSessionId, { client: TelegramClient, cleanup: NodeJS.Timeout, passwordResolver: Function }>
 const activeSessions = new Map();
 // Map<socketId, deviceSessionId>
@@ -232,7 +241,6 @@ io.on('connection', (socket) => {
                       break;
 
                   } else if (result instanceof Api.auth.LoginToken) {
-                      // log("QR", "Got Login Token, waiting for scan...");
                       const tokenBase64 = result.token.toString('base64')
                           .replace(/\+/g, '-')
                           .replace(/\//g, '_')
@@ -247,9 +255,24 @@ io.on('connection', (socket) => {
                       await new Promise(resolve => setTimeout(resolve, 2000));
 
                   } else if (result instanceof Api.auth.LoginTokenMigrateTo) {
-                      log("QR", `Migrating to DC ${result.dcId}...`);
-                      await client.switchDC(result.dcId);
-                      // Loop continues after migration
+                      const newDcId = result.dcId;
+                      const newIp = DC_IPS[newDcId];
+                      log("QR", `⚠️ Account is on DC ${newDcId} (${newIp || 'Unknown IP'}). Migrating...`);
+                      
+                      if (client.session && newIp) {
+                          // Manually update DC info in session
+                          client.session.setDC(newDcId, newIp, 443);
+                          
+                          // Reconnect to new DC
+                          await client.disconnect();
+                          await new Promise(r => setTimeout(r, 1000)); // Brief pause
+                          await client.connect();
+                          
+                          log("QR", `Connected to DC ${newDcId}. Resuming poll...`);
+                      } else {
+                          throw new Error(`Could not migrate to DC ${newDcId}. IP not found.`);
+                      }
+                      // Loop continues and will call ExportLoginToken on the new DC
                   }
               } catch (loopErr) {
                   if (loopErr.message && loopErr.message.includes('SESSION_PASSWORD_NEEDED')) {
@@ -271,10 +294,20 @@ io.on('connection', (socket) => {
                       break;
                   } else {
                       log("QR_LOOP_ERROR", loopErr.message);
-                      // Don't crash loop on minor network errors, but stop on critical ones
-                      if (loopErr.message.includes("AUTH_KEY")) {
+                      
+                      // Filter out common disconnection errors to keep retrying
+                      const isNetworkError = loopErr.message.includes("Connection") || loopErr.message.includes("Socket") || loopErr.message.includes("EPIPE");
+                      
+                      if (loopErr.message.includes("AUTH_KEY") && !isNetworkError) {
+                          // Fatal auth error
                           throw loopErr;
                       }
+                      
+                      // If it's the switchDC error (shouldn't happen now, but for safety), treat as fatal
+                      if (loopErr.message.includes("switchDC")) {
+                          throw loopErr;
+                      }
+
                       await new Promise(resolve => setTimeout(resolve, 2000));
                   }
               }
